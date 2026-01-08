@@ -152,42 +152,45 @@ export const getStudentNptelEnrollments = catchAsync(async (req, res) => {
 
   const connection = await pool.getConnection();
   try {
-    // Fetch regno using Userid
+    // Safely fetch regno
     const [studentRows] = await connection.execute(
       `SELECT sd.regno FROM student_details sd WHERE sd.Userid = ?`,
       [req.user.Userid]
     );
 
     if (studentRows.length === 0) {
-      return res.status(404).json({ status: "failure", message: "Student not found" });
+      return res.status(200).json({ 
+        status: "success", 
+        data: [] 
+      }); // No student record → return empty list (safe)
     }
 
     const regno = studentRows[0].regno;
 
-    // Fetch enrolled NPTEL courses with transfer status
+    // Fetch enrolled NPTEL courses with grade from StudentGrade
     const [rows] = await connection.execute(`
-  SELECT 
-    sne.enrollmentId, 
-    sne.nptelCourseId, 
-    nc.courseTitle, 
-    nc.courseCode, 
-    nc.type, 
-    nc.credits,
-    s.semesterNumber, 
-    s.startDate, 
-    s.endDate,
-    sg.grade AS importedGrade,  -- ← NEW: Get grade from StudentGrade
-    nct.transferId, 
-    nct.status AS transferStatus, 
-    nct.grade AS transferredGrade
-  FROM StudentNptelEnrollment sne
-  JOIN NptelCourse nc ON sne.nptelCourseId = nc.nptelCourseId
-  JOIN Semester s ON sne.semesterId = s.semesterId
-  LEFT JOIN StudentGrade sg ON sne.regno = sg.regno AND nc.courseCode = sg.courseCode
-  LEFT JOIN NptelCreditTransfer nct ON sne.enrollmentId = nct.enrollmentId
-  WHERE sne.regno = ? AND sne.isActive = 'YES'
-  ORDER BY s.semesterNumber DESC, nc.courseTitle
-`, [regno]);
+      SELECT 
+        sne.enrollmentId,
+        sne.nptelCourseId,
+        nc.courseTitle,
+        nc.courseCode,
+        nc.type,
+        nc.credits,
+        s.semesterNumber,
+        s.startDate,
+        s.endDate,
+        sg.grade AS importedGrade,
+        nct.studentStatus,
+        nct.studentRemarks,
+        nct.studentRespondedAt
+      FROM StudentNptelEnrollment sne
+      JOIN NptelCourse nc ON sne.nptelCourseId = nc.nptelCourseId
+      JOIN Semester s ON sne.semesterId = s.semesterId
+      LEFT JOIN StudentGrade sg ON sne.regno = sg.regno AND nc.courseCode = sg.courseCode
+      LEFT JOIN NptelCreditTransfer nct ON sne.enrollmentId = nct.enrollmentId
+      WHERE sne.regno = ? AND sne.isActive = 'YES'
+      ORDER BY s.semesterNumber DESC, nc.courseTitle
+    `, [regno]);
 
     res.status(200).json({
       status: "success",
@@ -202,101 +205,64 @@ export const getStudentNptelEnrollments = catchAsync(async (req, res) => {
 });
 
 export const requestCreditTransfer = catchAsync(async (req, res) => {
-  const { enrollmentId } = req.body;
+  const { enrollmentId, decision, remarks } = req.body;
 
   if (!enrollmentId) {
-    return res.status(400).json({ 
-      status: "failure", 
-      message: "enrollmentId is required" 
-    });
+    return res.status(400).json({ status: "failure", message: "enrollmentId required" });
   }
 
-  if (!req.user || !req.user.Userid) {
-    return res.status(401).json({ status: "failure", message: "User not authenticated" });
+  if (!['accepted', 'rejected'].includes(decision)) {
+    return res.status(400).json({ status: "failure", message: "Invalid decision" });
   }
 
   const connection = await pool.getConnection();
   try {
-    // Fetch student's regno safely
-    const [studentRows] = await connection.execute(
+    const [student] = await connection.execute(
       `SELECT sd.regno FROM student_details sd WHERE sd.Userid = ?`,
       [req.user.Userid]
     );
+    if (student.length === 0) throw new Error("Student not found");
+    const regno = student[0].regno;
 
-    if (studentRows.length === 0) {
-      return res.status(404).json({ status: "failure", message: "Student not found" });
-    }
-    const regno = studentRows[0].regno;
+    const [enroll] = await connection.execute(
+      `SELECT sne.nptelCourseId, nc.courseCode
+       FROM StudentNptelEnrollment sne
+       JOIN NptelCourse nc ON sne.nptelCourseId = nc.nptelCourseId
+       WHERE sne.enrollmentId = ? AND sne.regno = ?`,
+      [enrollmentId, regno]
+    );
+    if (enroll.length === 0) throw new Error("Not enrolled");
 
-    // Fetch enrollment details with NPTEL course code
-    const [enrollRows] = await connection.execute(`
-      SELECT sne.nptelCourseId, nc.courseCode
-      FROM StudentNptelEnrollment sne
-      JOIN NptelCourse nc ON sne.nptelCourseId = nc.nptelCourseId
-      WHERE sne.enrollmentId = ? AND sne.regno = ? AND sne.isActive = 'YES'
-    `, [enrollmentId, regno]);
+    const { nptelCourseId, courseCode } = enroll[0];
 
-    if (enrollRows.length === 0) {
-      return res.status(404).json({ 
-        status: "failure", 
-        message: "Enrollment not found or does not belong to you" 
-      });
-    }
-
-    const { nptelCourseId, courseCode } = enrollRows[0];
-
-    // Check if grade exists in StudentGrade
-    const [gradeRows] = await connection.execute(
+    const [gradeRow] = await connection.execute(
       `SELECT grade FROM StudentGrade WHERE regno = ? AND courseCode = ?`,
       [regno, courseCode]
     );
+    if (gradeRow.length === 0) throw new Error("Grade not imported yet");
 
-    if (gradeRows.length === 0) {
-      return res.status(400).json({
-        status: "failure",
-        message: "No grade found for this NPTEL course. Wait for admin to import grades."
-      });
-    }
+    const grade = gradeRow[0].grade;
 
-    const grade = gradeRows[0].grade;
-
-    if (grade === 'U') {
-      return res.status(400).json({
-        status: "failure",
-        message: "Grade is 'U' (Fail). Credit transfer not allowed."
-      });
-    }
-
-    // Check if request already exists
-    const [existing] = await connection.execute(
-      `SELECT transferId FROM NptelCreditTransfer WHERE enrollmentId = ?`,
-      [enrollmentId]
-    );
-
-    if (existing.length > 0) {
-      return res.status(400).json({
-        status: "failure",
-        message: "Credit transfer request already submitted"
-      });
-    }
-
-    // Create the request
+    // Record student's final decision
     await connection.execute(`
       INSERT INTO NptelCreditTransfer 
-        (enrollmentId, regno, nptelCourseId, grade, status)
-      VALUES (?, ?, ?, ?, 'pending')
-    `, [enrollmentId, regno, nptelCourseId, grade]);
+        (enrollmentId, regno, nptelCourseId, grade, studentStatus, studentRemarks, studentRespondedAt)
+      VALUES (?, ?, ?, ?, ?, ?, NOW())
+      ON DUPLICATE KEY UPDATE
+        studentStatus = VALUES(studentStatus),
+        studentRemarks = VALUES(studentRemarks),
+        studentRespondedAt = NOW(),
+        grade = VALUES(grade)
+    `, [enrollmentId, regno, nptelCourseId, grade, decision, remarks || null]);
 
     res.status(200).json({
       status: "success",
-      message: "Credit transfer request submitted successfully. Waiting for admin approval."
+      message: decision === 'accepted' 
+        ? "Credit transfer accepted!" 
+        : "Credit transfer rejected."
     });
   } catch (err) {
-    console.error("Error in requestCreditTransfer:", err);
-    res.status(500).json({ 
-      status: "failure", 
-      message: "Server error. Please try again." 
-    });
+    res.status(400).json({ status: "failure", message: err.message });
   } finally {
     connection.release();
   }
@@ -346,14 +312,15 @@ export const getOecPecProgress = catchAsync(async (req, res) => {
     required.forEach(r => requiredMap[r.category] = parseInt(r.count) || 0);
 
     // Approved NPTEL
-    const [nptel] = await connection.execute(`
-      SELECT nc.type, COUNT(*) as count
-      FROM NptelCreditTransfer nct
-      JOIN StudentNptelEnrollment sne ON nct.enrollmentId = sne.enrollmentId
-      JOIN NptelCourse nc ON sne.nptelCourseId = nc.nptelCourseId
-      WHERE nct.regno = ? AND nct.status = 'approved'
-      GROUP BY nc.type
-    `, [regno]);
+    // Replace NPTEL query with:
+const [nptel] = await connection.execute(`
+  SELECT nc.type, COUNT(*) as count
+  FROM NptelCreditTransfer nct
+  JOIN StudentNptelEnrollment sne ON nct.enrollmentId = sne.enrollmentId
+  JOIN NptelCourse nc ON sne.nptelCourseId = nc.nptelCourseId
+  WHERE nct.regno = ? AND nct.studentStatus = 'accepted'
+  GROUP BY nc.type
+`, [regno]);
 
     const nptelMap = { OEC: 0, PEC: 0 };
     nptel.forEach(r => nptelMap[r.type] = parseInt(r.count) || 0);
@@ -389,6 +356,67 @@ export const getOecPecProgress = catchAsync(async (req, res) => {
   } catch (err) {
     console.error("Error in getOecPecProgress:", err);
     res.status(500).json({ status: "failure", message: "Server error" });
+  } finally {
+    connection.release();
+  }
+});
+
+export const studentNptelCreditDecision = catchAsync(async (req, res) => {
+  const { enrollmentId, decision, remarks } = req.body;
+
+  if (!['accepted', 'rejected'].includes(decision)) {
+    return res.status(400).json({ status: "failure", message: "Invalid decision" });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    const [student] = await connection.execute(
+      `SELECT sd.regno FROM student_details sd WHERE sd.Userid = ?`,
+      [req.user.Userid]
+    );
+    if (student.length === 0) throw new Error("Student not found");
+    const regno = student[0].regno;
+
+    const [enroll] = await connection.execute(
+      `SELECT sne.nptelCourseId, nc.courseCode
+       FROM StudentNptelEnrollment sne
+       JOIN NptelCourse nc ON sne.nptelCourseId = nc.nptelCourseId
+       WHERE sne.enrollmentId = ? AND sne.regno = ?`,
+      [enrollmentId, regno]
+    );
+    if (enroll.length === 0) throw new Error("Enrollment not found");
+
+    const { nptelCourseId, courseCode } = enroll[0];
+
+    // Verify grade exists
+    const [gradeRow] = await connection.execute(
+      `SELECT grade FROM StudentGrade WHERE regno = ? AND courseCode = ?`,
+      [regno, courseCode]
+    );
+    if (gradeRow.length === 0) throw new Error("Grade not imported yet");
+
+    const grade = gradeRow[0].grade;
+
+    // Record student's final decision
+    await connection.execute(`
+      INSERT INTO NptelCreditTransfer 
+        (enrollmentId, regno, nptelCourseId, grade, studentStatus, studentRemarks, studentRespondedAt)
+      VALUES (?, ?, ?, ?, ?, ?, NOW())
+      ON DUPLICATE KEY UPDATE
+        studentStatus = VALUES(studentStatus),
+        studentRemarks = VALUES(studentRemarks),
+        studentRespondedAt = NOW(),
+        grade = VALUES(grade)
+    `, [enrollmentId, regno, nptelCourseId, grade, decision, remarks || null]);
+
+    res.status(200).json({
+      status: "success",
+      message: decision === 'accepted' 
+        ? "Credit transfer accepted successfully!" 
+        : "Credit transfer rejected."
+    });
+  } catch (err) {
+    res.status(400).json({ status: "failure", message: err.message || "Failed to record decision" });
   } finally {
     connection.release();
   }

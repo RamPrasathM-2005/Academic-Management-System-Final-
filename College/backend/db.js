@@ -632,11 +632,10 @@ const initDatabase = async () => {
                 regno VARCHAR(50) NOT NULL,
                 nptelCourseId INT NOT NULL,
                 grade ENUM('O','A+','A','B+','B','U') NOT NULL,
-                status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
                 requestedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                reviewedAt TIMESTAMP NULL,
-                reviewedBy VARCHAR(150) NULL,
-                remarks VARCHAR(500) NULL,
+                studentStatus ENUM('pending', 'accepted', 'rejected') DEFAULT 'pending',
+                studentRespondedAt TIMESTAMP NULL DEFAULT NULL,
+                studentRemarks VARCHAR(500) NULL,
                 CONSTRAINT fk_transfer_enrollment FOREIGN KEY (enrollmentId) REFERENCES StudentNptelEnrollment(enrollmentId)
                     ON UPDATE CASCADE ON DELETE CASCADE,
                 CONSTRAINT fk_transfer_student FOREIGN KEY (regno) REFERENCES student_details(regno)

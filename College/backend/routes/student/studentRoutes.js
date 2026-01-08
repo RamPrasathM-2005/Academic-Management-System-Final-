@@ -19,6 +19,7 @@ import {
   getStudentNptelEnrollments,
   requestCreditTransfer,
   getOecPecProgress,
+  studentNptelCreditDecision
 } from "../../controllers/nptelStudentController.js";
 
 // ... existing routes ...
@@ -66,5 +67,6 @@ router.post("/nptel-enroll", enrollNptel);
 router.get("/nptel-enrollments", getStudentNptelEnrollments);
 router.post("/nptel-credit-transfer", requestCreditTransfer);
 router.get("/oec-pec-progress", getOecPecProgress);
+router.post("/nptel-credit-decision", protect, studentNptelCreditDecision);
 
 export default router;
