@@ -320,30 +320,42 @@ export const deleteNptelCourse = catchAsync(async (req, res) => {
 });
 
 export const getPendingNptelTransfers = catchAsync(async (req, res) => {
-  const [rows] = await pool.execute(`
-    SELECT 
-      nct.transferId,
-      nct.regno,
-      u.username AS studentName,
-      nc.courseTitle,
-      nc.courseCode,
-      nc.type,
-      nc.credits,
-      nct.grade,
-      nct.status,
-      nct.requestedAt,
-      nct.remarks
-    FROM NptelCreditTransfer nct
-    JOIN StudentNptelEnrollment sne ON nct.enrollmentId = sne.enrollmentId
-    JOIN NptelCourse nc ON nct.nptelCourseId = nc.nptelCourseId
-    JOIN users u ON (SELECT Userid FROM student_details WHERE regno = nct.regno) = u.Userid
-    ORDER BY nct.requestedAt DESC
-  `);
+  const connection = await pool.getConnection();
+  try {
+    const [rows] = await connection.execute(`
+      SELECT
+        nct.transferId,
+        nct.regno,
+        u.username AS studentName,
+        nc.courseTitle,
+        nc.courseCode,
+        nc.type,
+        nc.credits,
+        nct.grade,
+        nct.studentStatus,
+        nct.studentRespondedAt,
+        nct.studentRemarks
+      FROM NptelCreditTransfer nct
+      JOIN StudentNptelEnrollment sne ON nct.enrollmentId = sne.enrollmentId
+      JOIN NptelCourse nc ON nct.nptelCourseId = nc.nptelCourseId
+      JOIN student_details sd ON nct.regno = sd.regno
+      JOIN users u ON sd.Userid = u.Userid
+      ORDER BY 
+        nct.studentRespondedAt IS NULL,  -- Pending first (NULLs at top)
+        nct.studentRespondedAt DESC,     -- Then most recent first
+        nct.transferId DESC
+    `);
 
-  res.status(200).json({
-    status: "success",
-    data: rows
-  });
+    res.status(200).json({
+      status: "success",
+      data: rows
+    });
+  } catch (err) {
+    console.error("Error in getPendingNptelTransfers:", err);
+    res.status(500).json({ status: "failure", message: "Server error" });
+  } finally {
+    connection.release();
+  }
 });
 
 export const approveRejectTransfer = catchAsync(async (req, res) => {

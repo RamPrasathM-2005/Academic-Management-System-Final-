@@ -1,12 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getUserRole } from '../../utils/auth';
+import { toast } from 'react-hot-toast';
+import { api } from '../../services/authService';
 import {
   fetchSemesters,
   fetchNptelCourses,
   enrollNptelCourses,
   fetchStudentNptelEnrollments,
   requestNptelCreditTransfer,
+
   fetchOecPecProgress,
 } from '../../services/studentService';
 
@@ -89,18 +92,37 @@ const NptelSelection = () => {
     }
   };
 
-  const handleRequestTransfer = async (enrollmentId) => {
-    try {
-      await requestNptelCreditTransfer(enrollmentId);
-      setSuccess('Credit transfer requested successfully!');
-      const enrolls = await fetchStudentNptelEnrollments();
-      setEnrolledNptel(enrolls);
-      const prog = await fetchOecPecProgress();
-      setProgress(prog);
-    } catch (err) {
-      setError('Failed to request transfer');
-    }
-  };
+
+ const handleStudentDecision = async (enrollmentId, decision) => {
+  let remarks = '';
+  if (decision === 'rejected') {
+    remarks = prompt('Optional: Reason for rejecting this credit transfer?') || '';
+  }
+
+  try {
+    // Use the existing endpoint that already works
+    await api.post('/student/nptel-credit-transfer', {
+      enrollmentId,
+      decision,        // 'accepted' or 'rejected'
+      remarks: remarks || ''
+    });
+
+    toast.success(
+      decision === 'accepted' 
+        ? 'Credit transfer accepted! It now counts toward your OEC/PEC.' 
+        : 'Credit transfer rejected.'
+    );
+
+    // Refresh data
+    const updatedEnrolls = await fetchStudentNptelEnrollments();
+    setEnrolledNptel(updatedEnrolls);
+    const prog = await fetchOecPecProgress();
+    setProgress(prog);
+  } catch (err) {
+    console.error('Decision error:', err);
+    toast.error(err.response?.data?.message || 'Failed to submit decision');
+  }
+};
 
   if (loading) {
     return <div className="text-center py-12 text-xl">Loading...</div>;
@@ -189,66 +211,72 @@ const NptelSelection = () => {
             </button>
           </div>
 
-          {/* Enrolled Courses */}
-          <div className="bg-white rounded-xl shadow-lg p-8">
-            <h2 className="text-2xl font-bold text-gray-800 mb-6">My Enrolled NPTEL Courses</h2>
-            {enrolledNptel.length === 0 ? (
-              <p className="text-gray-500 italic py-8 text-center">You have not enrolled in any NPTEL courses yet.</p>
-            ) : (
-              <div className="space-y-6">
-                {enrolledNptel.map(enroll => (
-                  <div key={enroll.enrollmentId} className="p-6 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-indigo-200">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <h4 className="text-xl font-bold text-indigo-800">{enroll.courseTitle}</h4>
-                        <p className="text-gray-700 mt-1">
-                          Code: <span className="font-mono">{enroll.courseCode}</span> • 
-                          Type: <span className="font-semibold">{enroll.type}</span> • 
-                          Credits: {enroll.credits}
-                        </p>
-                        <p className="text-sm text-gray-600 mt-2">
-                          Semester {enroll.semesterNumber}
-                        </p>
-                      </div>
-                    </div>
+          {/* Enrolled NPTEL Courses */}
+<div className="bg-white rounded-xl shadow-lg p-8">
+  <h2 className="text-2xl font-bold text-gray-800 mb-6">My Enrolled NPTEL Courses</h2>
+  {enrolledNptel.length === 0 ? (
+    <p className="text-gray-500 italic py-8 text-center">No enrolled NPTEL courses yet.</p>
+  ) : (
+    <div className="space-y-6">
+      {enrolledNptel.map(enroll => (
+        <div key={enroll.enrollmentId} className="p-6 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-indigo-200">
+          <div className="flex justify-between items-start">
+            <div>
+              <h4 className="text-xl font-bold text-indigo-800">{enroll.courseTitle}</h4>
+              <p className="text-gray-700 mt-1">
+                Code: <span className="font-mono">{enroll.courseCode}</span> • Type: {enroll.type} • Credits: {enroll.credits}
+              </p>
+              <p className="text-sm text-gray-600 mt-2">Semester {enroll.semesterNumber}</p>
+            </div>
+          </div>
 
-                    <div className="mt-6 flex items-center gap-6">
-                      {/* Show imported grade from StudentGrade */}
-                      {enroll.importedGrade ? (
-                        <>
-                          <span className="text-2xl font-bold text-green-600">
-                            Grade: {enroll.importedGrade}
-                          </span>
+          <div className="mt-6">
+            {enroll.importedGrade ? (
+              <>
+                <span className="text-2xl font-bold text-green-600">Grade: {enroll.importedGrade}</span>
 
-                          {/* Transfer Status */}
-                          {enroll.transferStatus ? (
-                            <span className={`px-4 py-2 rounded-full text-white font-bold ${
-                              enroll.transferStatus === 'approved' ? 'bg-green-600' :
-                              enroll.transferStatus === 'rejected' ? 'bg-red-600' :
-                              'bg-yellow-600'
-                            }`}>
-                              {enroll.transferStatus.toUpperCase()}
-                            </span>
-                          ) : (
-                            <button
-                              onClick={() => handleRequestTransfer(enroll.enrollmentId)}
-                              className="px-6 py-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-700 shadow-md transition transform hover:scale-105"
-                            >
-                              Request Credit Transfer
-                            </button>
-                          )}
-                        </>
-                      ) : (
-                        <span className="text-xl text-gray-500 italic">
-                          Grade pending (waiting for admin import)
-                        </span>
-                      )}
-                    </div>
+                {/* Student has not decided yet */}
+                {(!enroll.studentStatus || enroll.studentStatus === 'pending') ? (
+                  <div className="mt-4 flex gap-4">
+                    <button
+                      onClick={() => handleStudentDecision(enroll.enrollmentId, 'accepted')}
+                      className="px-6 py-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-700 shadow-lg transition"
+                    >
+                      Accept Credit Transfer
+                    </button>
+                    <button
+                      onClick={() => handleStudentDecision(enroll.enrollmentId, 'rejected')}
+                      className="px-6 py-3 bg-red-600 text-white font-bold rounded-lg hover:bg-red-700 shadow-lg transition"
+                    >
+                      Reject Credit Transfer
+                    </button>
                   </div>
-                ))}
-              </div>
+                ) : (
+                  <div className="mt-4">
+                    <span className={`px-6 py-3 rounded-full font-bold text-lg ${
+                      enroll.studentStatus === 'accepted' 
+                        ? 'bg-green-100 text-green-800 border-2 border-green-500' 
+                        : 'bg-red-100 text-red-800 border-2 border-red-500'
+                    }`}>
+                      You have {enroll.studentStatus === 'accepted' ? 'ACCEPTED' : 'REJECTED'} this credit
+                    </span>
+                    {enroll.studentStatus === 'accepted' && (
+                      <p className="text-green-700 font-semibold mt-3">
+                        ✓ This credit is now counted toward your OEC/PEC requirement
+                      </p>
+                    )}
+                  </div>
+                )}
+              </>
+            ) : (
+              <span className="text-xl text-gray-500 italic">Grade pending - waiting for admin import</span>
             )}
           </div>
+        </div>
+      ))}
+    </div>
+  )}
+</div>
         </>
       )}
 
