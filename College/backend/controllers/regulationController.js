@@ -348,3 +348,30 @@ export const allocateRegulationToBatch = async (req, res) => {
     if (connection) connection.release();
   }
 };
+
+export const getElectivesForSemester = async (req, res) => {
+  const { regulationId, semesterNumber } = req.params;
+  try {
+    const [rows] = await pool.execute(`
+      SELECT 
+        rc.courseCode,
+        rc.courseTitle,
+        rc.category,
+        vc.verticalId,
+        v.verticalName
+      FROM RegulationCourse rc
+      LEFT JOIN VerticalCourse vc ON rc.regCourseId = vc.regCourseId
+      LEFT JOIN Vertical v ON vc.verticalId = v.verticalId
+      WHERE rc.regulationId = ? 
+        AND rc.semesterNumber = ?
+        AND rc.category IN ('PEC', 'OEC')
+        AND rc.isActive = 'YES'
+      ORDER BY rc.courseCode
+    `, [regulationId, semesterNumber]);
+
+    res.json({ status: 'success', data: rows });
+  } catch (err) {
+    console.error('Error fetching electives for semester:', err);
+    res.status(500).json({ status: 'failure', message: err.message });
+  }
+};

@@ -16,14 +16,24 @@ export const getElectiveBuckets = catchAsync(async (req, res) => {
     );
     for (let bucket of buckets) {
       const [courses] = await connection.execute(
-        `SELECT c.courseCode, c.courseTitle, vc.verticalId, v.verticalName
-         FROM ElectiveBucketCourse ebc 
-         JOIN Course c ON ebc.courseId = c.courseId 
-         LEFT JOIN VerticalCourse vc ON c.courseId = vc.regCourseId
-         LEFT JOIN Vertical v ON vc.verticalId = v.verticalId
-         WHERE ebc.bucketId = ? AND c.isActive = 'YES'`,
-        [bucket.bucketId]
-      );
+      `SELECT 
+        c.courseCode, 
+        c.courseTitle, 
+        vc.verticalId, 
+        v.verticalName
+      FROM ElectiveBucketCourse ebc 
+      JOIN Course c ON ebc.courseId = c.courseId 
+      JOIN Semester s ON c.semesterId = s.semesterId
+      JOIN Batch b ON s.batchId = b.batchId
+      LEFT JOIN RegulationCourse rc 
+        ON rc.courseCode = c.courseCode 
+        AND rc.semesterNumber = s.semesterNumber 
+        AND rc.regulationId = b.regulationId
+      LEFT JOIN VerticalCourse vc ON rc.regCourseId = vc.regCourseId
+      LEFT JOIN Vertical v ON vc.verticalId = v.verticalId
+      WHERE ebc.bucketId = ? AND c.isActive = 'YES'`,
+      [bucket.bucketId]
+    );
       bucket.courses = courses;
     }
     res.status(200).json({ status: "success", data: buckets });

@@ -82,7 +82,6 @@ import {
   deleteElectiveBucket,
   removeCourseFromBucket,
   updateElectiveBucketName,
-  
 } from "../../controllers/electiveBucketController.js";
 import {
   getAllRegulations,
@@ -93,6 +92,7 @@ import {
   allocateCoursesToVertical,
   allocateRegulationToBatch,
   getCoursesByVertical, // Added this import
+  getElectivesForSemester, // Added this import
 } from "../../controllers/regulationController.js";
 import { protect } from "../../controllers/auth/authController.js";
 import { getStudentEnrollments } from "../../controllers/studentEnrollmentViewController.js";
@@ -226,6 +226,7 @@ router.put("/buckets/:bucketId", protect, updateElectiveBucketName);
 router.post("/buckets/:bucketId/courses", protect, addCoursesToBucket);
 router.delete("/buckets/:bucketId", protect, deleteElectiveBucket);
 router.delete("/buckets/:bucketId/courses/:courseId", protect, removeCourseFromBucket);
+router.get('/regulations/:regulationId/electives/:semesterNumber', protect, getElectivesForSemester);
 
 /* =========================
    📌 Consolidated Marks Routes
