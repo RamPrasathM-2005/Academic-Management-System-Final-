@@ -18,7 +18,7 @@ export const pool = mysql.createPool({
   dateStrings: true,
   charset: "utf8mb4",
   collation: "utf8mb4_unicode_ci",
-  multipleStatements: true, 
+  multipleStatements: true,
 });
 
 // Branch to Department ID mapping
@@ -413,7 +413,7 @@ const initDatabase = async () => {
                     ON UPDATE CASCADE ON DELETE CASCADE,
                 CONSTRAINT fk_tt_section FOREIGN KEY (sectionId) REFERENCES Section(sectionId)
                     ON UPDATE CASCADE ON DELETE SET NULL,
-                 UNIQUE (semesterId, dayOfWeek, periodNumber) 
+                 UNIQUE (semesterId, dayOfWeek, periodNumber, courseId) 
             )
         `);
 
@@ -580,8 +580,8 @@ const initDatabase = async () => {
             )
         `);
 
-                // 26) NptelCourse - Stores NPTEL (OEC/PEC) courses linked to a semester
-        await connection.execute(`
+    // 26) NptelCourse - Stores NPTEL (OEC/PEC) courses linked to a semester
+    await connection.execute(`
             CREATE TABLE IF NOT EXISTS NptelCourse (
                 nptelCourseId INT PRIMARY KEY AUTO_INCREMENT,
                 courseTitle VARCHAR(255) NOT NULL,
@@ -602,9 +602,8 @@ const initDatabase = async () => {
             )
         `);
 
-
-                // 27) StudentNptelEnrollment - Student enrolls in NPTEL courses (intent)
-        await connection.execute(`
+    // 27) StudentNptelEnrollment - Student enrolls in NPTEL courses (intent)
+    await connection.execute(`
             CREATE TABLE IF NOT EXISTS StudentNptelEnrollment (
                 enrollmentId INT PRIMARY KEY AUTO_INCREMENT,
                 regno VARCHAR(50) NOT NULL,
@@ -624,8 +623,8 @@ const initDatabase = async () => {
             )
         `);
 
-        // 28) NptelCreditTransfer - Request credit transfer after completion
-        await connection.execute(`
+    // 28) NptelCreditTransfer - Request credit transfer after completion
+    await connection.execute(`
             CREATE TABLE IF NOT EXISTS NptelCreditTransfer (
                 transferId INT PRIMARY KEY AUTO_INCREMENT,
                 enrollmentId INT NOT NULL,
@@ -646,7 +645,7 @@ const initDatabase = async () => {
             )
         `);
 
-        // Insert initial department data (aligned with branchMap)
+    // Insert initial department data (aligned with branchMap)
     await connection.execute(`
             INSERT IGNORE INTO department (Deptid, Deptname, Deptacronym)
             VALUES
@@ -671,8 +670,8 @@ const initDatabase = async () => {
                 ('O',10),('A+',9),('A',8),('B+',7),('B',6),('U',0)
         `);
 
-            // StudentGrade - supports both regular and NPTEL courses (no strict FK to Course)
-        await connection.execute(`
+    // StudentGrade - supports both regular and NPTEL courses (no strict FK to Course)
+    await connection.execute(`
             CREATE TABLE IF NOT EXISTS StudentGrade (
                 gradeId INT PRIMARY KEY AUTO_INCREMENT,
                 regno VARCHAR(50) NOT NULL,
@@ -688,11 +687,12 @@ const initDatabase = async () => {
             )
         `);
 
-
-        // Ensure triggers exist for courseCode validation (regular OR NPTEL)
-        // FIX: Use .query() instead of .execute() for Trigger DDL
-        await connection.query(`DROP TRIGGER IF EXISTS trg_studentgrade_insert_before`);
-        await connection.query(`
+    // Ensure triggers exist for courseCode validation (regular OR NPTEL)
+    // FIX: Use .query() instead of .execute() for Trigger DDL
+    await connection.query(
+      `DROP TRIGGER IF EXISTS trg_studentgrade_insert_before`
+    );
+    await connection.query(`
             CREATE TRIGGER trg_studentgrade_insert_before
             BEFORE INSERT ON StudentGrade
             FOR EACH ROW
@@ -715,8 +715,10 @@ const initDatabase = async () => {
             END
         `);
 
-        await connection.query(`DROP TRIGGER IF EXISTS trg_studentgrade_update_before`);
-        await connection.query(`
+    await connection.query(
+      `DROP TRIGGER IF EXISTS trg_studentgrade_update_before`
+    );
+    await connection.query(`
             CREATE TRIGGER trg_studentgrade_update_before
             BEFORE UPDATE ON StudentGrade
             FOR EACH ROW
@@ -738,8 +740,6 @@ const initDatabase = async () => {
               END IF;
             END
         `);
-
-        
 
     // 26) StudentSemesterGPA - Stores calculated GPA and CGPA per student per semester for analytics
     await connection.execute(`
