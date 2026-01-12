@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { createPortal } from 'react-dom'; // Import createPortal
+import { createPortal } from 'react-dom';
 import { useParams, useNavigate } from 'react-router-dom';
 import { 
   ChevronLeft, Upload, Download, ChevronDown, ChevronUp, 
@@ -12,7 +12,7 @@ import { getStudentCOMarks } from '../../services/staffService';
 
 const MySwal = withReactContent(Swal);
 
-// --- UPDATED Modal Component using Portal ---
+// --- Modal Component using Portal ---
 const ModalWrapper = ({ 
   title, 
   children, 
@@ -23,7 +23,6 @@ const ModalWrapper = ({
   saveDisabled = false,
   width = "max-w-lg"
 }) => {
-  // Prevent background scrolling when modal is open
   useEffect(() => {
     document.body.style.overflow = 'hidden';
     return () => {
@@ -31,10 +30,8 @@ const ModalWrapper = ({
     };
   }, []);
 
-  // Use createPortal to render outside the parent container context
   return createPortal(
     <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm transition-all duration-300">
-      {/* Modal Container */}
       <div className={`bg-white rounded-2xl shadow-2xl w-full ${width} relative flex flex-col max-h-[90vh] animate-in fade-in zoom-in-95 duration-200`}>
         
         {/* Header */}
@@ -79,7 +76,7 @@ const ModalWrapper = ({
         )}
       </div>
     </div>,
-    document.body // This renders the modal directly into the <body> tag
+    document.body
   );
 };
 
@@ -221,6 +218,7 @@ const MarksAllocation = () => {
     }
   };
 
+  // --- FIXED: Handle Save Marks without White Screen Crash ---
   const handleSaveToolMarksClick = async () => {
     if (!selectedCO || !selectedCO.tools || selectedCO.tools.length === 0) {
       MySwal.fire('Error', 'No tools selected for this CO', 'error');
@@ -230,6 +228,7 @@ const MarksAllocation = () => {
     let allSuccess = true;
     let errorMessage = '';
 
+    // 1. Save marks for each tool individually
     for (const tool of selectedCO.tools) {
       const marks = students.map((student) => ({
         regno: student.regno,
@@ -246,24 +245,39 @@ const MarksAllocation = () => {
 
     if (allSuccess) {
       try {
+        // 2. Refetch the calculated consolidated marks from backend
         const updatedCoMarks = await getStudentCOMarks(courseId);
-        setStudents((prev) =>
-          prev.map((student) => {
-            const coMark = updatedCoMarks.data.students.find((m) => m.regno === student.regno);
-            if (coMark) {
-              const newConsolidatedMarks = { ...student.consolidatedMarks };
-              courseOutcomes.forEach((co) => {
-                const markData = coMark.marks[co.coNumber];
-                newConsolidatedMarks[co.coId] = markData ? Number(markData.consolidatedMark) : 0;
-              });
-              return { ...student, consolidatedMarks: newConsolidatedMarks };
-            }
-            return student;
-          })
-        );
+
+        // 3. Update State Safely
+        // Verify that the response structure exists before mapping to avoid crashes
+        if (updatedCoMarks?.data?.students) {
+          setStudents((prev) =>
+            prev.map((student) => {
+              const coMark = updatedCoMarks.data.students.find((m) => m.regno === student.regno);
+              
+              // Only update if coMark exists and has the 'marks' property
+              if (coMark && coMark.marks) {
+                const newConsolidatedMarks = { ...student.consolidatedMarks };
+                
+                courseOutcomes.forEach((co) => {
+                  // Safely access the consolidated mark for the specific CO
+                  const markData = coMark.marks[co.coNumber];
+                  newConsolidatedMarks[co.coId] = markData ? Number(markData.consolidatedMark) : 0;
+                });
+                
+                return { ...student, consolidatedMarks: newConsolidatedMarks };
+              }
+              // Return student as-is if no new data found
+              return student;
+            })
+          );
+        } else {
+          console.warn("API success, but 'updatedCoMarks.data.students' is missing or undefined.", updatedCoMarks);
+        }
       } catch (refetchErr) {
         console.error('Error refetching CO marks:', refetchErr);
       }
+      
       MySwal.fire('Success', 'Tool marks and consolidated CO marks saved successfully', 'success');
     } else {
       MySwal.fire('Error', errorMessage || 'Failed to save marks for some tools', 'error');
