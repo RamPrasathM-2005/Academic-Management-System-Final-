@@ -232,71 +232,30 @@ export async function getStudentsForPeriodAdmin(req, res, next) {
     next(err);
   }
 }
-
 export async function markAttendanceAdmin(req, res, next) {
   const connection = await pool.getConnection();
 
   try {
-    const { courseId, sectionId, dayOfWeek, periodNumber } = req.params;
+    const { courseId, dayOfWeek, periodNumber } = req.params;
     const { date, attendances } = req.body;
-    const markedBy = req.user.Userid; // Use Userid for admin
+    const adminUserId = req.user.Userid;
     const deptId = req.user.Deptid || 1;
 
-    // Log input for debugging
-    console.log("markAttendanceAdmin Input:", {
-      courseId,
-      sectionId,
-      dayOfWeek,
-      periodNumber,
-      date,
-      markedBy,
-      deptId,
-      attendances,
-    });
-
-    // Validate input
+    // 1. Validation
     if (!Array.isArray(attendances) || attendances.length === 0) {
-      return res.status(400).json({
-        status: "error",
-        message: "No attendance data provided",
-      });
+      return res
+        .status(400)
+        .json({ status: "error", message: "No attendance data provided" });
     }
-
-    if (!date) {
-      return res.status(400).json({
-        status: "error",
-        message: "Date is required",
-      });
-    }
-
-    if (!courseId || !dayOfWeek || !periodNumber) {
-      return res.status(400).json({
-        status: "error",
-        message:
-          "Missing required parameters: courseId, dayOfWeek, periodNumber",
-      });
-    }
-
-    // Verify that the period exists in Timetable
-    const [timetableCheck] = await connection.query(
-      `
-      SELECT COUNT(*) as count
-      FROM Timetable
-      WHERE courseId = ? AND dayOfWeek = ? AND periodNumber = ?
-      `,
-      [courseId, dayOfWeek, periodNumber]
-    );
-
-    if (timetableCheck[0].count === 0) {
-      return res.status(400).json({
-        status: "error",
-        message: "Invalid period: not found in Timetable",
-      });
+    if (!date || !courseId || !dayOfWeek || !periodNumber) {
+      return res
+        .status(400)
+        .json({ status: "error", message: "Missing required parameters" });
     }
 
     await connection.beginTransaction();
 
-    // Get semester information
+    // 2. Get Course/Semester Info
     const [courseInfo] = await connection.query(
       `SELECT c.semesterId, s.semesterNumber 
        FROM Course c 
@@ -310,112 +269,217 @@ export async function markAttendanceAdmin(req, res, next) {
     }
     const semesterNumber = courseInfo[0].semesterNumber;
 
-    // Track inserted/updated records and errors for logging
     const processedStudents = [];
     const skippedStudents = [];
 
-    // Process each student's attendance
+    // 3. Process each student
     for (const att of attendances) {
+      // Allow P, A, and OD
       if (!att.rollnumber || !["P", "A", "OD"].includes(att.status)) {
-        console.log("Skipping invalid attendance record:", att);
         skippedStudents.push({
-          rollnumber: att.rollnumber || "unknown",
-          reason: "Invalid rollnumber or status",
+          rollnumber: att.rollnumber,
+          reason: "Invalid status",
         });
         continue;
       }
 
-      // Fetch the student's sectionId for this course
+      // Fetch student's specific section for this course
       const [studentCourse] = await connection.query(
         `SELECT sectionId FROM StudentCourse WHERE regno = ? AND courseId = ?`,
         [att.rollnumber, courseId]
       );
 
       if (studentCourse.length === 0) {
-        console.log("Student not enrolled:", att.rollnumber);
         skippedStudents.push({
           rollnumber: att.rollnumber,
-          reason: "Not enrolled in course",
+          reason: "Not enrolled",
         });
         continue;
       }
 
       const studentSectionId = studentCourse[0].sectionId;
-      const statusToSave = att.status === "OD" ? "OD" : att.status;
 
-      // Insert or update PeriodAttendance (using markedBy column)
-      await connection.query(
-        `
+      /**
+       * IMPORTANT:
+       * We use VALUES(column_name) in the UPDATE section.
+       * This tells MySQL: "If this record exists, update the status and updatedBy
+       * using the new values I just provided in the INSERT part."
+       */
+      const query = `
         INSERT INTO PeriodAttendance 
-        (regno, staffId, courseId, sectionId, semesterNumber, dayOfWeek, periodNumber, attendanceDate, status, Deptid, updatedBy)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (regno, staffId, courseId, sectionId, semesterNumber, dayOfWeek, periodNumber, attendanceDate, status, Deptid, updatedBy)
+        VALUES 
+          (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE 
-          status = ?,
-          staffId =null,
-          updatedBy = ?
-        `,
-        [
-          att.rollnumber,
-          markedBy,
-          courseId,
-          studentSectionId,
-          semesterNumber,
-          dayOfWeek,
-          periodNumber,
-          date,
-          statusToSave,
-          deptId,
-          "admin",
-          statusToSave,
-          markedBy,
-          "admin",
-        ]
-      );
+          status = VALUES(status),
+          updatedBy = VALUES(updatedBy),
+          staffId = VALUES(staffId),
+          Deptid = VALUES(Deptid)
+      `;
 
-      console.log("Processed attendance for student:", {
-        rollnumber: att.rollnumber,
-        status: statusToSave,
-        sectionId: studentSectionId,
-      });
+      const values = [
+        att.rollnumber,
+        adminUserId, // staffId becomes admin's ID
+        courseId,
+        studentSectionId,
+        semesterNumber,
+        dayOfWeek,
+        periodNumber,
+        date,
+        att.status, // Store actual status (P, A, or OD)
+        deptId,
+        "admin", // updatedBy label
+      ];
+
+      await connection.query(query, values);
 
       processedStudents.push({
         rollnumber: att.rollnumber,
-        status: statusToSave,
-        sectionId: studentSectionId,
+        status: att.status,
       });
     }
 
     await connection.commit();
 
-    // Log successful and skipped records
-    console.log("Attendance Marked Successfully (Admin):", {
-      courseId,
-      sectionId: sectionId || "all",
-      date,
-      periodNumber,
-      markedBy,
-      processedStudents,
-      skippedStudents,
-    });
-
     res.json({
       status: "success",
-      message: `Attendance marked for ${processedStudents.length} students, skipped ${skippedStudents.length} students`,
-      data: { processedStudents, skippedStudents },
+      message: `Updated ${processedStudents.length} records.`,
+      data: {
+        processedCount: processedStudents.length,
+        skippedCount: skippedStudents.length,
+      },
     });
   } catch (err) {
     await connection.rollback();
-    console.error("Error in markAttendanceAdmin:", {
-      message: err.message,
-      stack: err.stack,
-      sqlState: err.sqlState,
-      sqlMessage: err.sqlMessage,
-    });
+    console.error("Admin Attendance Error:", err);
+    res.status(500).json({ status: "error", message: err.message });
+  } finally {
+    connection.release();
+  }
+}
+/**
+ * 1. GET STUDENTS LIST
+ * Fetches all students enrolled in a specific Degree, Batch, and Semester.
+ */
+export async function getStudentsBySemester(req, res) {
+  // We only need Deptid, batch, and semesterId from the frontend
+  const { batch, semesterId, Deptid } = req.query;
+
+  try {
+    const [students] = await pool.query(
+      `SELECT DISTINCT sd.regno as rollnumber, u.username as name 
+       FROM student_details sd
+       JOIN users u ON sd.Userid = u.Userid
+       WHERE sd.Deptid = ? 
+         AND sd.batch = ? 
+         AND sd.Semester = ?
+       ORDER BY sd.regno ASC`,
+      [Deptid, batch, semesterId]
+    );
+
+    res.json({ status: "success", data: students });
+  } catch (err) {
+    console.error("Error fetching student roster:", err);
     res.status(500).json({
       status: "error",
-      message: err.message || "Failed to mark attendance",
-      sqlError: err.sqlMessage || "No SQL error details available",
+      message: "Failed to load student roster",
+      details: err.message,
     });
+  }
+}
+/**
+ * 2. MARK FULL DAY OD
+ * Marks selected students as 'OD' for every period found in the timetable for that day.
+ */
+export async function markFullDayOD(req, res) {
+  const connection = await pool.getConnection();
+  try {
+    const { startDate, students, Deptid, semesterId, batch } = req.body;
+    const adminUserId = req.user.Userid;
+
+    if (!students || students.length === 0) {
+      return res
+        .status(400)
+        .json({ status: "error", message: "No students selected" });
+    }
+
+    await connection.beginTransaction();
+
+    const dayOfWeek = new Date(startDate)
+      .toLocaleDateString("en-US", { weekday: "short" })
+      .toUpperCase();
+
+    /**
+     * 1. FIND THE TIMETABLE SLOTS
+     * We join 'timetable' with 'student_details' to ensure we only get
+     * periods that belong to the specific Batch, Dept, and Semester.
+     */
+    const [timetableSlots] = await connection.query(
+      `SELECT DISTINCT t.courseId, t.sectionId, t.periodNumber
+       FROM timetable t
+       JOIN student_details sd ON t.Deptid = sd.Deptid AND t.courseId IN (
+          /* Subquery to find courses mapped to this student group */
+          SELECT DISTINCT courseId FROM student_details WHERE Deptid = ? AND batch = ? AND Semester = ?
+       )
+       WHERE t.Deptid = ? AND t.dayOfWeek = ? AND sd.batch = ? AND sd.Semester = ?`,
+      [Deptid, batch, semesterId, Deptid, dayOfWeek, batch, semesterId]
+    );
+
+    // If the above complex join is too restrictive, use this simpler version:
+    /*
+    const [timetableSlots] = await connection.query(
+      `SELECT courseId, sectionId, periodNumber 
+       FROM timetable 
+       WHERE Deptid = ? AND dayOfWeek = ?`, 
+      [Deptid, dayOfWeek]
+    );
+    */
+
+    if (timetableSlots.length === 0) {
+      return res.status(404).json({
+        status: "error",
+        message: `No classes found in timetable for Batch ${batch}, Dept ${Deptid} on ${dayOfWeek}.`,
+      });
+    }
+
+    // 2. MARK ATTENDANCE
+    for (const student of students) {
+      for (const slot of timetableSlots) {
+        await connection.query(
+          `INSERT INTO periodattendance 
+            (regno, staffId, courseId, sectionId, semesterNumber, dayOfWeek, periodNumber, attendanceDate, status, Deptid, updatedBy)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE 
+            status = 'OD',
+            updatedBy = 'admin',
+            staffId = ?`,
+          [
+            student.rollnumber,
+            adminUserId,
+            slot.courseId,
+            1,
+            semesterId,
+            dayOfWeek,
+            slot.periodNumber,
+            startDate,
+            "P",
+            Deptid,
+            "admin",
+            adminUserId,
+          ]
+        );
+      }
+    }
+
+    await connection.commit();
+    res.json({
+      status: "success",
+      message: `OD marked successfully for Batch ${batch}.`,
+    });
+  } catch (err) {
+    await connection.rollback();
+    console.error("Full Day OD Error:", err);
+    res.status(500).json({ status: "error", message: err.message });
   } finally {
     connection.release();
   }
