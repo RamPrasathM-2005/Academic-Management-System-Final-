@@ -58,6 +58,7 @@ import NotFound from "./pages/NotFound";
 //  import StudentEnrollmentsView from "./pages/admin/StudentEnrollmentsView";
 
 import AttendanceReport from "./pages/admin/AttendanceReports";
+import DayAttemdance from "./pages/admin/DayAttendance.jsx";
 
 // ProtectedRoute
 const ProtectedRoute = ({ children, role }) => {
@@ -99,6 +100,7 @@ const routes = [
       { path: 'subjectWise-marks', element: <SubjectWiseMarks /> },
       { path: 'course-recommendation', element: <CourseRecommendation /> },
       { path: 'adminattendance', element: <AdminAttendance /> },
+      {path: 'dayAttendance', element: <DayAttemdance />},
       { path: "/admin/attendance-report", element: <AttendanceReport />} ,
       { path: 'report', element: <Report /> },
       { path: 'student-staff-mapping', element: <StudentEnrollmentsView /> },

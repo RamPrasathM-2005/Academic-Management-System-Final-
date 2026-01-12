@@ -137,71 +137,79 @@ export async function getStudentsForPeriod(req, res, next) {
     const { courseId, sectionId, dayOfWeek, periodNumber } = req.params;
     const date = req.query.date || new Date().toISOString().split("T")[0];
     const staffId = req.user.staffId;
-    const deptId = req.user.Deptid || null;
-
-    console.log("Input Parameters:", {
-      courseId,
-      sectionId,
-      dayOfWeek,
-      periodNumber,
-      date,
-      staffId,
-      deptId,
-    });
 
     if (!courseId || !dayOfWeek || !periodNumber) {
-      return res.status(400).json({
-        status: "error",
-        message:
-          "Missing required parameters: courseId, dayOfWeek, periodNumber",
-      });
+      return res
+        .status(400)
+        .json({ status: "error", message: "Missing params" });
     }
 
     const userId = await getUserIdFromStaffId(staffId, connection);
-
     const safeSectionId =
       sectionId && !isNaN(parseInt(sectionId)) ? parseInt(sectionId) : null;
 
-    // Check staff assignment to course (any section if safeSectionId null, or specific)
-    const assignmentQuery = safeSectionId
-      ? `
-        SELECT COUNT(*) as count
-        FROM StaffCourse 
-        WHERE Userid = ? AND courseId = ? AND sectionId = ?
-        `
-      : `
-        SELECT COUNT(*) as count
-        FROM StaffCourse 
-        WHERE Userid = ? AND courseId = ?
-        `;
-    const assignmentParams = safeSectionId
-      ? [userId, courseId, safeSectionId]
-      : [userId, courseId];
-    const [courseAssignment] = await connection.query(
-      assignmentQuery,
-      assignmentParams
+    // 1. Fetch Course Details (Category and Code)
+    const [courseDetails] = await connection.query(
+      "SELECT category, courseCode, courseTitle FROM Course WHERE courseId = ?",
+      [courseId]
     );
 
-    if (courseAssignment[0].count === 0) {
-      return res.status(403).json({
-        status: "error",
-        message:
-          "You are not authorized to access attendance for this course section",
-      });
+    if (courseDetails.length === 0) {
+      return res
+        .status(404)
+        .json({ status: "error", message: "Course not found" });
     }
 
+    const { category, courseCode, courseTitle } = courseDetails[0];
+    const isElective = ["OEC", "PEC"].includes(category.trim().toUpperCase());
+
+    // 2. Identify the "Target Course IDs"
+    // If it's an elective, we fetch students from ANY courseId that has the same code
+    // AND is assigned to this staff member.
+    let targetCourseIds = [parseInt(courseId)];
+
+    if (isElective) {
+      const [relatedCourses] = await connection.query(
+        `SELECT DISTINCT c.courseId 
+         FROM Course c
+         JOIN StaffCourse sc ON c.courseId = sc.courseId
+         WHERE sc.Userid = ? 
+         AND (c.courseCode = ? OR c.courseTitle = ?)`,
+        [userId, courseCode, courseTitle]
+      );
+      if (relatedCourses.length > 0) {
+        targetCourseIds = relatedCourses.map((rc) => rc.courseId);
+      }
+    }
+
+    // 3. Authorization Check (Verify staff is assigned to at least the requested courseId)
+    const [authCheck] = await connection.query(
+      `SELECT COUNT(*) as count FROM StaffCourse 
+       WHERE Userid = ? AND courseId = ? ${
+         safeSectionId ? "AND sectionId = ?" : ""
+       }`,
+      safeSectionId ? [userId, courseId, safeSectionId] : [userId, courseId]
+    );
+
+    if (authCheck[0].count === 0) {
+      return res
+        .status(403)
+        .json({ status: "error", message: "Not authorized" });
+    }
+
+    // 4. Student Fetching Logic
+    // For electives, we pull students from all targetCourseIds found in step 2.
+    // We filter by safeSectionId only if it's NOT an elective or if a specific section was requested.
     const baseQuery = `
-      SELECT 
+      SELECT DISTINCT
         sd.regno AS rollnumber, 
-        u.username AS name, 
+        COALESCE(u.username, 'Name Not Set') AS name, 
         COALESCE(pa.status, '') AS status,
-        sc.sectionId
+        sc.sectionId,
+        sc.courseId
       FROM StudentCourse sc
       JOIN student_details sd ON sc.regno = sd.regno
-      JOIN users u ON sd.Userid = u.Userid
-      JOIN Course c ON sc.courseId = c.courseId
-      JOIN Semester sem ON c.semesterId = sem.semesterId
-      JOIN Batch bat ON sem.batchId = bat.batchId
+      LEFT JOIN users u ON sd.Userid = u.Userid
       LEFT JOIN PeriodAttendance pa ON sc.regno = pa.regno 
         AND pa.courseId = sc.courseId 
         AND pa.sectionId = sc.sectionId
@@ -209,52 +217,31 @@ export async function getStudentsForPeriod(req, res, next) {
         AND pa.periodNumber = ? 
         AND pa.attendanceDate = ?
         AND pa.staffId = ?
-      WHERE sc.courseId = ? 
-        AND sc.sectionId IN (SELECT sectionId FROM StaffCourse WHERE Userid = ? AND courseId = ?)
-        ${safeSectionId ? "AND sc.sectionId = ?" : ""}
-        AND sd.batch = CAST(bat.batch AS UNSIGNED)
-        ${deptId ? "AND sd.Deptid = ?" : ""}
+      WHERE sc.courseId IN (?)
+        ${!isElective && safeSectionId ? "AND sc.sectionId = ?" : ""}
       ORDER BY sd.regno
     `;
 
-    const params = [
-      dayOfWeek,
-      periodNumber,
-      date,
-      userId,
-      courseId,
-      userId,
-      courseId,
-    ];
-    if (safeSectionId) params.push(safeSectionId);
-    if (deptId) params.push(deptId);
+    const params = [dayOfWeek, periodNumber, date, userId, targetCourseIds];
+    if (!isElective && safeSectionId) params.push(safeSectionId);
 
     const [students] = await connection.query(baseQuery, params);
 
-    console.log("Fetched Students for Period:", {
-      courseId,
-      sectionId: safeSectionId,
-      date,
-      dayOfWeek,
-      periodNumber,
-      totalStudents: students.length,
+    res.json({
+      status: "success",
+      data: students || [],
+      meta: {
+        isElective,
+        mappedCourses: targetCourseIds,
+      },
     });
-
-    res.json({ status: "success", data: students || [] });
   } catch (err) {
-    console.error("Error in getStudentsForPeriod:", {
-      message: err.message,
-      stack: err.stack,
-    });
-    res.status(500).json({
-      status: "error",
-      message: err.message || "Internal server error",
-    });
+    console.error("Error in getStudentsForPeriod:", err);
+    res.status(500).json({ status: "error", message: err.message });
   } finally {
     connection.release();
   }
 }
-
 // Fetch skipped students for a specific period
 export async function getSkippedStudents(req, res, next) {
   const connection = await pool.getConnection();

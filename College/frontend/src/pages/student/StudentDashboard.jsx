@@ -247,16 +247,6 @@ const StudentDashboard = () => {
       <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
       </svg>
-    ),
-    Blood: (
-      <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
-      </svg>
-    ),
-    Gender: (
-      <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-      </svg>
     )
   };
 
@@ -311,13 +301,12 @@ const StudentDashboard = () => {
             </div>
         </div>
 
-        {/* TOP ROW: QUICK INFO CARDS (Moved Here) */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        {/* TOP ROW: QUICK INFO CARDS */}
+        {/* Adjusted grid to 2 columns to fit the remaining 2 items nicely */}
+        <div className="grid grid-cols-2 md:grid-cols-2 gap-4 mb-8">
             {[
             { label: 'Dept', value: studentDetails?.Deptname?.split(' ')[0], gradient: 'from-blue-500 to-blue-600', icon: icons.Dept },
-            { label: 'Section', value: studentDetails?.section, gradient: 'from-purple-500 to-purple-600', icon: icons.Section },
-            { label: 'Blood', value: studentDetails?.blood_group, gradient: 'from-red-500 to-red-600', icon: icons.Blood },
-            { label: 'Gender', value: studentDetails?.gender, gradient: 'from-emerald-500 to-emerald-600', icon: icons.Gender }
+            { label: 'Section', value: studentDetails?.section, gradient: 'from-purple-500 to-purple-600', icon: icons.Section }
             ].map((item, i) => (
             item.value && (
                 <div key={i} className="bg-white rounded-[24px] p-5 shadow-sm border border-slate-100 flex items-center gap-4 hover:shadow-md transition-all cursor-default">
@@ -498,8 +487,6 @@ const StudentDashboard = () => {
                         </div>
                     </div>
                 </div>
-
-                {/* Quick Info Cards Removed from here */}
             </div>
 
             {/* RIGHT COLUMN (Sidebar) */}

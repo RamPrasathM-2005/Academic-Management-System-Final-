@@ -19,7 +19,7 @@ const ModalWrapper = ({ title, children, onClose, onSave, saveText = "Save", sav
           <button 
             onClick={onClose}
             className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-all"
-            disabled={saveDisabled}
+            // FIX: Removed disabled={saveDisabled} so the X button always works
           >
             <X className="w-5 h-5" />
           </button>
@@ -35,7 +35,7 @@ const ModalWrapper = ({ title, children, onClose, onSave, saveText = "Save", sav
           <button
             onClick={onClose}
             className="px-5 py-2.5 text-sm font-semibold text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 focus:ring-4 focus:ring-slate-100 transition-all shadow-sm"
-            disabled={saveDisabled}
+            // FIX: Removed disabled={saveDisabled} so Cancel always works
           >
             Cancel
           </button>

@@ -4,6 +4,8 @@ import {
   getTimetableAdmin,
   getStudentsForPeriodAdmin,
   markAttendanceAdmin,
+  markFullDayOD,
+  getStudentsBySemester,
 } from "../../controllers/adminattendancecontroller.js";
 import { protect } from "../../controllers/auth/authController.js";
 
@@ -18,6 +20,8 @@ router.get(
   "/students/:courseId/all/:dayOfWeek/:periodNumber",
   getStudentsForPeriodAdmin
 );
+router.get("/students-list",  getStudentsBySemester);
+router.post("/mark-full-day-od",  markFullDayOD);
 router.post(
   "/mark/:courseId/:sectionId/:dayOfWeek/:periodNumber",
   markAttendanceAdmin

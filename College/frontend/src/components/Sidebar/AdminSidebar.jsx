@@ -45,6 +45,7 @@ const AdminSidebar = () => {
     { to: "/admin/student-staff-mapping", icon: Network, label: "Staff Course Mapping" },
     { to: "/admin/timetable", icon: CalendarClock, label: "Timetable" },
     { to: "/admin/adminattendance", icon: ClipboardCheck, label: "Attendance" },
+    { to: "/admin/dayAttendance", icon: Info, label: "Day Attendance" },
     { to: "/admin/consolidated-marks", icon: Calculator, label: "Consolidated Marks" },
     { to: "/admin/subjectwise-marks", icon: BarChart3, label: "Subjectwise Marks" },
     { to: "/admin/cgpa-allocation", icon: Award, label: "CGPA Allocation" },
