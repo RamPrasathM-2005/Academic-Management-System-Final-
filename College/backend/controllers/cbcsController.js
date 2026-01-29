@@ -155,12 +155,14 @@ export const createCbcs = async (req, res) => {
       total_students,
       type
     } = req.body;
+
     if (!Deptid || !batchId || !semesterId || !subjects || subjects.length === 0) {
       return res.status(400).json({
         error: 'Deptid, batchId, semesterId, and subjects are required'
       });
     }
-    console.log(subjects);
+
+    console.log('Received payload:', { total_students, subjects }); // ← Debug: check what frontend sent
 
     const conn = await pool.getConnection();
 
@@ -186,7 +188,6 @@ export const createCbcs = async (req, res) => {
 
       // Loop subjects
       for (const subj of subjects) {
-
         // Insert CBCS_Subject
         const [subjRes] = await conn.execute(
           `INSERT INTO CBCS_Subject 
@@ -199,7 +200,11 @@ export const createCbcs = async (req, res) => {
 
         const cbcsSubjectId = subjRes.insertId;
 
-        const totalStudents = subj.total_students || 0;
+        // FIXED: Use the value sent from frontend!
+        const totalStudents = Number(subj.total_students) || Number(total_students) || 120; // ← Real fix
+
+        console.log(`Subject ${subj.subject_id}: Using totalStudents = ${totalStudents}`); // Debug
+
         const sections = subj.staffs || [];
         const sectionCount = sections.length;
 
@@ -207,7 +212,7 @@ export const createCbcs = async (req, res) => {
           throw new Error(`No sections found for subject ${subj.subject_id}`);
         }
 
-        // ✅ FIXED STUDENT DISTRIBUTION LOGIC
+        // Distribute students
         const baseCount = Math.floor(totalStudents / sectionCount);
         let remainder = totalStudents % sectionCount;
 
@@ -218,10 +223,10 @@ export const createCbcs = async (req, res) => {
             throw new Error(`Invalid section/staff data for subject ${subj.subject_id}`);
           }
 
-          const studentCount =
-            baseCount + (remainder > 0 ? 1 : 0);
-
+          const studentCount = baseCount + (remainder > 0 ? 1 : 0);
           if (remainder > 0) remainder--;
+
+          console.log(`Section ${st.sectionId}: ${studentCount} students`); // Debug
 
           await conn.execute(
             `INSERT INTO CBCS_Section_Staff
@@ -242,6 +247,7 @@ export const createCbcs = async (req, res) => {
 
     } catch (err) {
       await conn.rollback();
+      console.error('Transaction error:', err);
       throw err;
     } finally {
       conn.release();
@@ -255,6 +261,117 @@ export const createCbcs = async (req, res) => {
     });
   }
 };
+// export const createCbcs = async (req, res) => {
+//   try {
+//     const {
+//       Deptid,
+//       batchId,
+//       semesterId,
+//       createdBy,
+//       subjects,
+//       total_students,
+//       type
+//     } = req.body;
+//     if (!Deptid || !batchId || !semesterId || !subjects || subjects.length === 0) {
+//       return res.status(400).json({
+//         error: 'Deptid, batchId, semesterId, and subjects are required'
+//       });
+//     }
+//     console.log(subjects);
+
+//     const conn = await pool.getConnection();
+
+//     try {
+//       await conn.beginTransaction();
+
+//       // Insert CBCS master
+//       const [cbcsResult] = await conn.execute(
+//         `INSERT INTO CBCS 
+//          (batchId, Deptid, semesterId, total_students, type, createdBy)
+//          VALUES (?, ?, ?, ?, ?, ?)`,
+//         [
+//           batchId,
+//           Deptid,
+//           semesterId,
+//           total_students || 0,
+//           type || 'FCFS',
+//           createdBy
+//         ]
+//       );
+
+//       const cbcsId = cbcsResult.insertId;
+
+//       // Loop subjects
+//       for (const subj of subjects) {
+
+//         // Insert CBCS_Subject
+//         const [subjRes] = await conn.execute(
+//           `INSERT INTO CBCS_Subject 
+//            (cbcs_id, courseId, courseCode, courseTitle, category, type, credits, bucketName)
+//            SELECT ?, c.courseId, c.courseCode, c.courseTitle, c.category, c.type, c.credits, ?
+//            FROM Course c
+//            WHERE c.courseId = ?`,
+//           [cbcsId, subj.bucketName || 'Core', subj.subject_id]
+//         );
+
+//         const cbcsSubjectId = subjRes.insertId;
+
+//         const totalStudents = Number(subj.total_students) || 0;
+//         const sections = subj.staffs || [];
+//         const sectionCount = sections.length;
+
+//         if (sectionCount === 0) {
+//           throw new Error(`No sections found for subject ${subj.subject_id}`);
+//         }
+
+//         // ✅ FIXED STUDENT DISTRIBUTION LOGIC
+//         const baseCount = Math.floor(totalStudents / sectionCount);
+//         let remainder = totalStudents % sectionCount;
+
+//         for (let index = 0; index < sectionCount; index++) {
+//           const st = sections[index];
+
+//           if (!st?.sectionId || !st?.staff_id) {
+//             throw new Error(`Invalid section/staff data for subject ${subj.subject_id}`);
+//           }
+
+//           const studentCount =
+//             baseCount + (remainder > 0 ? 1 : 0);
+
+//           if (remainder > 0) remainder--;
+
+//           await conn.execute(
+//             `INSERT INTO CBCS_Section_Staff
+//              (cbcs_subject_id, sectionId, staffId, student_count)
+//              VALUES (?, ?, ?, ?)`,
+//             [cbcsSubjectId, st.sectionId, st.staff_id, studentCount]
+//           );
+//         }
+//       }
+
+//       await conn.commit();
+
+//       return res.json({
+//         success: true,
+//         message: 'CBCS created successfully',
+//         cbcs_id: cbcsId
+//       });
+
+//     } catch (err) {
+//       await conn.rollback();
+//       throw err;
+//     } finally {
+//       conn.release();
+//     }
+
+//   } catch (err) {
+//     console.error('createCbcs error:', err);
+//     res.status(500).json({
+//       success: false,
+//       error: err.message
+//     });
+//   }
+// };
 
 
 export const getAllCbcs = async (req, res) => {
@@ -397,6 +514,7 @@ export const getStudentCbcsSelection = async (req, res) => {
            AND c.isActive = 'YES'`,
         [batchId, deptId, semesterId]
       );
+      console.log(cbcsRows);
 
       if (cbcsRows.length === 0) {
         return res.status(404).json({ 
@@ -424,6 +542,7 @@ export const getStudentCbcsSelection = async (req, res) => {
            )`,
         [regno, cbcsId]
       );
+      //console.log(subjects);
 
       const [staffRows] = await conn.execute(
         `SELECT 
@@ -473,9 +592,17 @@ export const getStudentCbcsSelection = async (req, res) => {
   }
 };
 
+
+// Helper for background finalization
+const runBackgroundFinalization = (cbcs_id, createdBy = 1) => {
+  console.log(`[BG-FINALIZE] Starting background finalization for CBCS ${cbcs_id}`);
+  finalizeAndOptimizeAllocation(cbcs_id, createdBy)
+    .then(() => console.log(`[BG-FINALIZE] SUCCESS for CBCS ${cbcs_id}`))
+    .catch(err => console.error(`[BG-FINALIZE] FAILED for CBCS ${cbcs_id}:`, err));
+};
+
 // =============================================
-// 2. Student submits choices - ONE TIME ONLY
-// + Automatically triggers finalization if this was the last submission
+// Student submits choices - ONE TIME ONLY
 // =============================================
 export const submitStudentCourseSelection = async (req, res) => {
   const { regno, cbcs_id, selections } = req.body;
@@ -491,7 +618,20 @@ export const submitStudentCourseSelection = async (req, res) => {
   try {
     await conn.beginTransaction();
 
-    // Prevent resubmission
+    // Prevent concurrent submissions from same student+cbcs
+    const [[{ lock_acquired }]] = await conn.execute(
+      `SELECT GET_LOCK(CONCAT('submit_cbcs_', ?, '_', ?), 10) AS lock_acquired`,
+      [regno, cbcs_id]
+    );
+
+    if (lock_acquired !== 1) {
+      return res.status(429).json({ 
+        success: false, 
+        error: "Submission is being processed. Please wait a moment and try again." 
+      });
+    }
+
+    // Check if already submitted
     const [existing] = await conn.execute(
       `SELECT 1 FROM student_temp_choice 
        WHERE regno = ? AND cbcs_id = ? LIMIT 1`,
@@ -499,10 +639,7 @@ export const submitStudentCourseSelection = async (req, res) => {
     );
 
     if (existing.length > 0) {
-      return res.status(403).json({
-        success: false,
-        error: "You have already submitted your choices. Submission is final."
-      });
+      throw new Error("You have already submitted your choices. Submission is final.");
     }
 
     // Insert all choices
@@ -510,7 +647,7 @@ export const submitStudentCourseSelection = async (req, res) => {
       const sel = selections[i];
 
       if (!sel.courseId || !sel.sectionId || !sel.staffId) {
-        throw new Error(`Invalid selection at index ${i}: missing course/section/staff`);
+        throw new Error(`Invalid selection at index ${i}`);
       }
 
       await conn.execute(
@@ -521,7 +658,7 @@ export const submitStudentCourseSelection = async (req, res) => {
       );
     }
 
-    // Check if this submission completed all students
+    // Check if this was the last submission
     const [[cbcsInfo]] = await conn.execute(
       `SELECT total_students AS expected, complete
        FROM CBCS 
@@ -529,30 +666,23 @@ export const submitStudentCourseSelection = async (req, res) => {
       [cbcs_id]
     );
 
-    if (cbcsInfo.complete === 'YES') {
-      await conn.commit();
-      return res.json({
-        success: true,
-        message: "Choices submitted successfully (CBCS already finalized)"
-      });
-    }
+    if (cbcsInfo.complete !== 'YES') {
+      const expected = Number(cbcsInfo.expected) || 0;
+      if (expected > 0) {
+        const [[{ submitted }]] = await conn.execute(
+          `SELECT COUNT(DISTINCT regno) AS submitted
+           FROM student_temp_choice
+           WHERE cbcs_id = ?`,
+          [cbcs_id]
+        );
 
-    const expected = cbcsInfo.expected || 0;
+        console.log(`CBCS ${cbcs_id} progress: ${submitted}/${expected} students`);
 
-    if (expected > 0) {
-      const [[{ submitted }]] = await conn.execute(
-        `SELECT COUNT(DISTINCT regno) AS submitted
-         FROM student_temp_choice
-         WHERE cbcs_id = ?`,
-        [cbcs_id]
-      );
-
-      console.log(`After submission - CBCS ${cbcs_id}: ${submitted}/${expected} students`);
-
-      // If all students have submitted → immediately finalize
-      if (submitted >= expected) {
-        console.log(`[AUTO-FINALIZE] All students submitted! Starting finalization for CBCS ${cbcs_id}`);
-        await finalizeAndOptimizeAllocation(cbcs_id, 1); // 1 = system/admin user ID
+        // If last submission → queue finalization in background
+        if (submitted >= expected) {
+          console.log(`[LAST SUBMISSION] Queuing background finalization for CBCS ${cbcs_id}`);
+          setImmediate(() => runBackgroundFinalization(cbcs_id, 1));
+        }
       }
     }
 
@@ -562,24 +692,39 @@ export const submitStudentCourseSelection = async (req, res) => {
       success: true,
       message: "Choices submitted successfully. You cannot change them anymore."
     });
+
   } catch (err) {
     await conn.rollback();
     console.error("submitStudentCourseSelection error:", err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(400).json({ 
+      success: false, 
+      error: err.message || "Failed to submit choices" 
+    });
   } finally {
+    // Release lock
+    try {
+      await conn.execute(
+        `SELECT RELEASE_LOCK(CONCAT('submit_cbcs_', ?, '_', ?))`,
+        [regno, cbcs_id]
+      );
+    } catch {}
     conn.release();
   }
 };
 
 // =============================================
-// 3. Final allocation & optimization (called automatically when ready)
+// Final allocation & optimization (now background only)
 // =============================================
 export const finalizeAndOptimizeAllocation = async (cbcs_id, createdBy = 1) => {
   const conn = await pool.getConnection();
   try {
+    // Increase lock wait timeout for long operations
+    await conn.execute("SET SESSION innodb_lock_wait_timeout = 120"); // 2 minutes
+
     await conn.beginTransaction();
 
-    // Get all subjects in this CBCS
+    console.log(`[FINALIZE] Started for CBCS ${cbcs_id}`);
+
     const [subjects] = await conn.execute(
       `SELECT cs.cbcs_subject_id, cs.courseId
        FROM CBCS_Subject cs WHERE cbcs_id = ?`,
@@ -589,10 +734,8 @@ export const finalizeAndOptimizeAllocation = async (cbcs_id, createdBy = 1) => {
     for (const subj of subjects) {
       const courseId = subj.courseId;
 
-      // Clear previous final allocation
       await conn.execute(`DELETE FROM studentcourse WHERE courseId = ?`, [courseId]);
 
-      // Get student preferences ordered by preference
       const [preferences] = await conn.execute(
         `SELECT regno, preferred_sectionId AS sectionId, preferred_staffId AS staffId
          FROM student_temp_choice
@@ -601,9 +744,11 @@ export const finalizeAndOptimizeAllocation = async (cbcs_id, createdBy = 1) => {
         [cbcs_id, courseId]
       );
 
-      if (preferences.length === 0) continue;
+      if (preferences.length === 0) {
+        console.log(`[FINALIZE] No preferences for course ${courseId}`);
+        continue;
+      }
 
-      // Get sections with max capacity
       const [sections] = await conn.execute(
         `SELECT sectionId, staffId, student_count AS max_capacity
          FROM CBCS_Section_Staff WHERE cbcs_subject_id = ?`,
@@ -646,7 +791,7 @@ export const finalizeAndOptimizeAllocation = async (cbcs_id, createdBy = 1) => {
         }
       }
 
-      // Second pass: balance excess (move from overloaded to underloaded)
+      // Second pass: balance excess
       for (const [sectionId, data] of allocations) {
         while (data.current > data.max && data.students.length > 0) {
           const student = data.students.pop();
@@ -667,7 +812,6 @@ export const finalizeAndOptimizeAllocation = async (cbcs_id, createdBy = 1) => {
             target.current++;
             target.students.push(student);
           } else {
-            // No space → put back (this student remains unallocated)
             data.students.push(student);
             data.current++;
             break;
@@ -675,14 +819,14 @@ export const finalizeAndOptimizeAllocation = async (cbcs_id, createdBy = 1) => {
         }
       }
 
-      // Save final allocation to studentcourse
+      // Save final allocation - FIXED: correct column count
       for (const [sectionId, data] of allocations) {
         for (const regno of data.students) {
           await conn.execute(
             `INSERT INTO studentcourse 
-             (regno, courseId, sectionId, staffId, createdBy, createdDate)
-             VALUES (?, ?, ?, ?, ?, NOW())`,
-            [regno, courseId, sectionId, data.staffId, createdBy]
+             (regno, courseId, sectionId, createdBy, createdDate)
+             VALUES (?, ?, ?, ?, NOW())`,
+            [regno, courseId, sectionId, createdBy]
           );
         }
       }
@@ -697,13 +841,254 @@ export const finalizeAndOptimizeAllocation = async (cbcs_id, createdBy = 1) => {
 
     await conn.commit();
     console.log(`[FINALIZE] Successfully completed allocation for CBCS ${cbcs_id}`);
+
   } catch (err) {
     await conn.rollback();
     console.error(`[FINALIZE] Error for CBCS ${cbcs_id}:`, err);
+    throw err;
   } finally {
     conn.release();
   }
 };
+
+// =============================================
+// Your existing downloadCbcsExcel function (unchanged)
+// =============================================
+
+
+// // =============================================
+// // 2. Student submits choices - ONE TIME ONLY
+// // + Automatically triggers finalization if this was the last submission
+// // =============================================
+
+
+// export const submitStudentCourseSelection = async (req, res) => {
+//   const { regno, cbcs_id, selections } = req.body;
+
+//   if (!regno || !cbcs_id || !Array.isArray(selections) || selections.length === 0) {
+//     return res.status(400).json({ 
+//       success: false, 
+//       error: "Invalid data: regno, cbcs_id, and selections array required" 
+//     });
+//   }
+
+//   const conn = await pool.getConnection();
+//   try {
+//     await conn.beginTransaction();
+
+//     // Prevent resubmission
+//     const [existing] = await conn.execute(
+//       `SELECT 1 FROM student_temp_choice 
+//        WHERE regno = ? AND cbcs_id = ? LIMIT 1`,
+//       [regno, cbcs_id]
+//     );
+
+//     if (existing.length > 0) {
+//       return res.status(403).json({
+//         success: false,
+//         error: "You have already submitted your choices. Submission is final."
+//       });
+//     }
+
+//     // Insert all choices
+//     for (let i = 0; i < selections.length; i++) {
+//       const sel = selections[i];
+
+//       if (!sel.courseId || !sel.sectionId || !sel.staffId) {
+//         throw new Error(`Invalid selection at index ${i}: missing course/section/staff`);
+//       }
+
+//       await conn.execute(
+//         `INSERT INTO student_temp_choice
+//          (regno, cbcs_id, courseId, preferred_sectionId, preferred_staffId, preference_order)
+//          VALUES (?, ?, ?, ?, ?, ?)`,
+//         [regno, cbcs_id, sel.courseId, sel.sectionId, sel.staffId, i + 1]
+//       );
+//     }
+
+//     // Check if this submission completed all students
+//     const [[cbcsInfo]] = await conn.execute(
+//       `SELECT total_students AS expected, complete
+//        FROM CBCS 
+//        WHERE cbcs_id = ?`,
+//       [cbcs_id]
+//     );
+
+//     if (cbcsInfo.complete === 'YES') {
+//       await conn.commit();
+//       return res.json({
+//         success: true,
+//         message: "Choices submitted successfully (CBCS already finalized)"
+//       });
+//     }
+
+//     const expected = cbcsInfo.expected || 0;
+
+//     if (expected > 0) {
+//       const [[{ submitted }]] = await conn.execute(
+//         `SELECT COUNT(DISTINCT regno) AS submitted
+//          FROM student_temp_choice
+//          WHERE cbcs_id = ?`,
+//         [cbcs_id]
+//       );
+
+//       console.log(`After submission - CBCS ${cbcs_id}: ${submitted}/${expected} students`);
+
+//       // If all students have submitted → immediately finalize
+//       if (submitted >= expected) {
+//         console.log(`[AUTO-FINALIZE] All students submitted! Starting finalization for CBCS ${cbcs_id}`);
+//         await finalizeAndOptimizeAllocation(cbcs_id, 1); // 1 = system/admin user ID
+//       }
+//     }
+
+//     await conn.commit();
+
+//     return res.json({
+//       success: true,
+//       message: "Choices submitted successfully. You cannot change them anymore."
+//     });
+//   } catch (err) {
+//     await conn.rollback();
+//     console.error("submitStudentCourseSelection error:", err);
+//     res.status(500).json({ success: false, error: err.message });
+//   } finally {
+//     conn.release();
+//   }
+// };
+
+// // =============================================
+// // 3. Final allocation & optimization (called automatically when ready)
+// // =============================================
+// export const finalizeAndOptimizeAllocation = async (cbcs_id, createdBy = 1) => {
+//   const conn = await pool.getConnection();
+//   try {
+//     await conn.beginTransaction();
+
+//     // Get all subjects in this CBCS
+//     const [subjects] = await conn.execute(
+//       `SELECT cs.cbcs_subject_id, cs.courseId
+//        FROM CBCS_Subject cs WHERE cbcs_id = ?`,
+//       [cbcs_id]
+//     );
+
+//     for (const subj of subjects) {
+//       const courseId = subj.courseId;
+
+//       // Clear previous final allocation
+//       await conn.execute(`DELETE FROM studentcourse WHERE courseId = ?`, [courseId]);
+
+//       // Get student preferences ordered by preference
+//       const [preferences] = await conn.execute(
+//         `SELECT regno, preferred_sectionId AS sectionId, preferred_staffId AS staffId
+//          FROM student_temp_choice
+//          WHERE cbcs_id = ? AND courseId = ?
+//          ORDER BY preference_order ASC`,
+//         [cbcs_id, courseId]
+//       );
+
+//       if (preferences.length === 0) continue;
+
+//       // Get sections with max capacity
+//       const [sections] = await conn.execute(
+//         `SELECT sectionId, staffId, student_count AS max_capacity
+//          FROM CBCS_Section_Staff WHERE cbcs_subject_id = ?`,
+//         [subj.cbcs_subject_id]
+//       );
+
+//       const allocations = new Map();
+//       sections.forEach(s => {
+//         allocations.set(s.sectionId, {
+//           staffId: s.staffId,
+//           max: Number(s.max_capacity),
+//           current: 0,
+//           students: []
+//         });
+//       });
+
+//       // First pass: assign preferred section if capacity allows
+//       for (const pref of preferences) {
+//         const target = allocations.get(pref.sectionId);
+//         if (target && target.current < target.max) {
+//           target.current++;
+//           target.students.push(pref.regno);
+//           continue;
+//         }
+
+//         // Find section with most remaining capacity
+//         let best = null;
+//         let bestSpace = -1;
+//         for (const data of allocations.values()) {
+//           const space = data.max - data.current;
+//           if (space > bestSpace) {
+//             bestSpace = space;
+//             best = data;
+//           }
+//         }
+
+//         if (best && bestSpace > 0) {
+//           best.current++;
+//           best.students.push(pref.regno);
+//         }
+//       }
+
+//       // Second pass: balance excess (move from overloaded to underloaded)
+//       for (const [sectionId, data] of allocations) {
+//         while (data.current > data.max && data.students.length > 0) {
+//           const student = data.students.pop();
+//           data.current--;
+
+//           let target = null;
+//           let maxSpace = -1;
+//           for (const tData of allocations.values()) {
+//             if (tData === data) continue;
+//             const space = tData.max - tData.current;
+//             if (space > maxSpace) {
+//               maxSpace = space;
+//               target = tData;
+//             }
+//           }
+
+//           if (target && maxSpace > 0) {
+//             target.current++;
+//             target.students.push(student);
+//           } else {
+//             // No space → put back (this student remains unallocated)
+//             data.students.push(student);
+//             data.current++;
+//             break;
+//           }
+//         }
+//       }
+
+//       // Save final allocation to studentcourse
+//       for (const [sectionId, data] of allocations) {
+//         for (const regno of data.students) {
+//           await conn.execute(
+//             `INSERT INTO studentcourse 
+//              (regno, courseId, sectionId, createdBy, createdDate)
+//              VALUES (?, ?, ?, ?, NOW())`,
+//             [regno, courseId, sectionId, createdBy]
+//           );
+//         }
+//       }
+//     }
+
+//     // Mark CBCS as completed
+//     await conn.execute(
+//       `UPDATE CBCS SET complete = 'YES', updatedBy = ?, updatedDate = NOW()
+//        WHERE cbcs_id = ?`,
+//       [createdBy, cbcs_id]
+//     );
+
+//     await conn.commit();
+//     console.log(`[FINALIZE] Successfully completed allocation for CBCS ${cbcs_id}`);
+//   } catch (err) {
+//     await conn.rollback();
+//     console.error(`[FINALIZE] Error for CBCS ${cbcs_id}:`, err);
+//   } finally {
+//     conn.release();
+//   }
+// };
 
 // controllers/cbcsController.js
 export const downloadCbcsExcel = async (req, res) => {
@@ -929,5 +1314,29 @@ export const downloadCbcsExcel = async (req, res) => {
     res.status(500).json({ success: false, error: "Failed to generate Excel" });
   } finally {
     conn.release();
+  }
+};
+
+export const manualFinalizeCbcs = async (req, res) => {
+  try {
+    const { id } = req.params; 
+
+    if (!id) {
+      return res.status(400).json({ success: false, error: "CBCS ID is required" });
+    }
+
+    console.log(`[MANUAL TRIGGER] Request received for CBCS ID: ${id}`);
+
+    
+    await finalizeAndOptimizeAllocation(id, 1); 
+
+    return res.json({ 
+      success: true, 
+      message: `Allocation finalized successfully for CBCS ${id}` 
+    });
+
+  } catch (err) {
+    console.error("Manual Finalize Error:", err);
+    return res.status(500).json({ success: false, error: err.message });
   }
 };

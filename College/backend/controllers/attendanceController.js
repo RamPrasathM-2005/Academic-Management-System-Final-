@@ -1,7 +1,10 @@
-// Updated attendanceController.js
 import pool from "../db.js";
 
-// Helper to generate dates between two dates (inclusive)
+// ==========================================
+// HELPER FUNCTIONS
+// ==========================================
+
+// Generate array of dates between start and end
 function generateDates(start, end) {
   const dates = [];
   let current = new Date(start);
@@ -14,13 +17,24 @@ function generateDates(start, end) {
   return dates;
 }
 
-// Helper to get dayOfWeek (1 = Monday, 7 = Sunday)
+// Get dayOfWeek string (MON, TUE...) from date or number
 function getDayOfWeek(dateStr) {
   const day = new Date(dateStr).getDay(); // 0 = Sunday
   return day === 0 ? 7 : day; // Convert Sunday to 7
 }
 
-// Helper function to get Userid from staffId
+// Map numeric day (1-7) to String
+const dayMap = {
+  1: "MON",
+  2: "TUE",
+  3: "WED",
+  4: "THU",
+  5: "FRI",
+  6: "SAT",
+  7: "SUN", // Just in case
+};
+
+// Helper to resolve internal Userid from public staffId
 async function getUserIdFromStaffId(staffId, connection = null) {
   const conn = connection || pool;
   const [user] = await conn.query(
@@ -33,7 +47,12 @@ async function getUserIdFromStaffId(staffId, connection = null) {
   return user[0].Userid;
 }
 
-// Fetch timetable for staff
+// ==========================================
+// CONTROLLER FUNCTIONS
+// ==========================================
+
+// 1. Fetch Timetable for Staff
+// Fix: Filters by StaffCourse assignment, NOT by Department ID
 export async function getTimetable(req, res, next) {
   const connection = await pool.getConnection();
   try {
@@ -43,7 +62,7 @@ export async function getTimetable(req, res, next) {
     if (!staffId) {
       return res
         .status(400)
-        .json({ status: "error", message: "Staff ID not found" });
+        .json({ status: "error", message: "Staff ID not found in token" });
     }
     if (!startDate || !endDate) {
       return res
@@ -53,6 +72,11 @@ export async function getTimetable(req, res, next) {
 
     const userId = await getUserIdFromStaffId(staffId, connection);
 
+    // SQL Logic:
+    // 1. Join Timetable to StaffCourse based on Course AND Section.
+    // 2. (t.sectionId = sc.sectionId OR t.sectionId IS NULL) handles cases where
+    //    a timetable slot might be a common lecture (NULL) or specific section.
+    // 3. Filter strictly by sc.Userid (The Staff), ignoring Dept restrictions.
     const [periods] = await connection.query(
       `
       SELECT 
@@ -68,43 +92,32 @@ export async function getTimetable(req, res, next) {
         t.Deptid,
         d.Deptacronym as departmentCode
       FROM Timetable t
-      JOIN Course c ON t.courseId = c.courseId
-      JOIN StaffCourse sc ON t.courseId = sc.courseId AND (t.sectionId = sc.sectionId OR t.sectionId IS NULL)
+      INNER JOIN StaffCourse sc 
+          ON t.courseId = sc.courseId 
+          AND (t.sectionId = sc.sectionId OR t.sectionId IS NULL)
+      INNER JOIN Course c ON t.courseId = c.courseId
       LEFT JOIN Section s ON t.sectionId = s.sectionId
       JOIN department d ON t.Deptid = d.Deptid
       JOIN Semester sm ON t.semesterId = sm.semesterId
-      JOIN Batch b ON sm.batchId = b.batchId
-      WHERE sc.Userid = ? 
+      WHERE 
+        sc.Userid = ? 
         AND t.isActive = 'YES'
         AND c.isActive = 'YES'
-        AND sc.Deptid = t.Deptid
       ORDER BY FIELD(t.dayOfWeek, 'MON','TUE','WED','THU','FRI','SAT'), t.periodNumber;
       `,
       [userId]
     );
 
-    console.log("Fetched Timetable for Staff ID:", staffId, "User ID:", userId);
-    console.log("Filters:", {
-      startDate,
-      endDate,
-    });
-    console.log("Periods:", JSON.stringify(periods, null, 2));
+    console.log("Fetched Timetable for UserID:", userId, "Count:", periods.length);
 
     const dates = generateDates(startDate, endDate);
-    const dayMap = {
-      1: "MON",
-      2: "TUE",
-      3: "WED",
-      4: "THU",
-      5: "FRI",
-      6: "SAT",
-    };
-
     const timetable = {};
+
     dates.forEach((date) => {
       const dayOfWeekNum = getDayOfWeek(date);
       const dayOfWeekStr = dayMap[dayOfWeekNum];
       let periodsForDay = [];
+      
       if (dayOfWeekStr) {
         periodsForDay = periods
           .filter((row) => row.dayOfWeek === dayOfWeekStr)
@@ -117,7 +130,6 @@ export async function getTimetable(req, res, next) {
       timetable[date] = periodsForDay;
     });
 
-    console.log("Structured Timetable:", JSON.stringify(timetable, null, 2));
     res.status(200).json({ status: "success", data: { timetable } });
   } catch (err) {
     console.error("Error in getTimetable:", err);
@@ -130,7 +142,7 @@ export async function getTimetable(req, res, next) {
   }
 }
 
-// Fetch students for a specific period
+// 2. Fetch Students for a specific period
 export async function getStudentsForPeriod(req, res, next) {
   const connection = await pool.getConnection();
   try {
@@ -148,24 +160,22 @@ export async function getStudentsForPeriod(req, res, next) {
     const safeSectionId =
       sectionId && !isNaN(parseInt(sectionId)) ? parseInt(sectionId) : null;
 
-    // 1. Fetch Course Details (Category and Code)
+    // A. Fetch Course Details
     const [courseDetails] = await connection.query(
       "SELECT category, courseCode, courseTitle FROM Course WHERE courseId = ?",
       [courseId]
     );
 
     if (courseDetails.length === 0) {
-      return res
-        .status(404)
-        .json({ status: "error", message: "Course not found" });
+      return res.status(404).json({ status: "error", message: "Course not found" });
     }
 
     const { category, courseCode, courseTitle } = courseDetails[0];
-    const isElective = ["OEC", "PEC"].includes(category.trim().toUpperCase());
+    // Check if it's an elective (OEC/PEC)
+    const isElective = ["OEC", "PEC"].includes(category?.trim().toUpperCase());
 
-    // 2. Identify the "Target Course IDs"
-    // If it's an elective, we fetch students from ANY courseId that has the same code
-    // AND is assigned to this staff member.
+    // B. Identify Target Course IDs
+    // If elective, fetch all courseIds with same Code/Title assigned to this staff
     let targetCourseIds = [parseInt(courseId)];
 
     if (isElective) {
@@ -182,7 +192,8 @@ export async function getStudentsForPeriod(req, res, next) {
       }
     }
 
-    // 3. Authorization Check (Verify staff is assigned to at least the requested courseId)
+    // C. Authorization Check
+    // Verify staff is assigned to the requested course (and section if provided)
     const [authCheck] = await connection.query(
       `SELECT COUNT(*) as count FROM StaffCourse 
        WHERE Userid = ? AND courseId = ? ${
@@ -194,12 +205,10 @@ export async function getStudentsForPeriod(req, res, next) {
     if (authCheck[0].count === 0) {
       return res
         .status(403)
-        .json({ status: "error", message: "Not authorized" });
+        .json({ status: "error", message: "Not authorized for this course/section" });
     }
 
-    // 4. Student Fetching Logic
-    // For electives, we pull students from all targetCourseIds found in step 2.
-    // We filter by safeSectionId only if it's NOT an elective or if a specific section was requested.
+    // D. Fetch Students
     const baseQuery = `
       SELECT DISTINCT
         sd.regno AS rollnumber, 
@@ -242,7 +251,8 @@ export async function getStudentsForPeriod(req, res, next) {
     connection.release();
   }
 }
-// Fetch skipped students for a specific period
+
+// 3. Fetch Skipped Students (marked by Admin)
 export async function getSkippedStudents(req, res, next) {
   const connection = await pool.getConnection();
   try {
@@ -250,54 +260,26 @@ export async function getSkippedStudents(req, res, next) {
     const { date } = req.query;
     const staffId = req.user.staffId;
 
-    console.log("Input Parameters for getSkippedStudents:", {
-      courseId,
-      sectionId,
-      dayOfWeek,
-      periodNumber,
-      date,
-      staffId,
-    });
-
     if (!courseId || !dayOfWeek || !periodNumber || !date) {
       return res.status(400).json({
         status: "error",
-        message:
-          "Missing required parameters: courseId, dayOfWeek, periodNumber, or date",
+        message: "Missing required parameters",
       });
     }
 
     const userId = await getUserIdFromStaffId(staffId, connection);
+    const safeSectionId = sectionId && !isNaN(parseInt(sectionId)) ? parseInt(sectionId) : null;
 
-    const safeSectionId =
-      sectionId && !isNaN(parseInt(sectionId)) ? parseInt(sectionId) : null;
-
-    // Check staff assignment (similar to above)
+    // Auth Check
     const assignmentQuery = safeSectionId
-      ? `
-        SELECT COUNT(*) as count
-        FROM StaffCourse 
-        WHERE Userid = ? AND courseId = ? AND sectionId = ?
-        `
-      : `
-        SELECT COUNT(*) as count
-        FROM StaffCourse 
-        WHERE Userid = ? AND courseId = ?
-        `;
-    const assignmentParams = safeSectionId
-      ? [userId, courseId, safeSectionId]
-      : [userId, courseId];
-    const [courseAssignment] = await connection.query(
-      assignmentQuery,
-      assignmentParams
-    );
+      ? `SELECT COUNT(*) as count FROM StaffCourse WHERE Userid = ? AND courseId = ? AND sectionId = ?`
+      : `SELECT COUNT(*) as count FROM StaffCourse WHERE Userid = ? AND courseId = ?`;
+    
+    const assignmentParams = safeSectionId ? [userId, courseId, safeSectionId] : [userId, courseId];
+    const [courseAssignment] = await connection.query(assignmentQuery, assignmentParams);
 
     if (courseAssignment[0].count === 0) {
-      return res.status(403).json({
-        status: "error",
-        message:
-          "You are not authorized to access attendance for this course section",
-      });
+      return res.status(403).json({ status: "error", message: "Not authorized" });
     }
 
     const baseQuery = `
@@ -309,17 +291,14 @@ export async function getSkippedStudents(req, res, next) {
       FROM PeriodAttendance pa
       JOIN student_details sd ON pa.regno = sd.regno
       JOIN users u ON sd.Userid = u.Userid
-      JOIN Course c ON pa.courseId = c.courseId
-      JOIN Semester sem ON c.semesterId = sem.semesterId
-      JOIN Batch bat ON sem.batchId = bat.batchId
       WHERE pa.courseId = ?
+        -- Ensure we only show students from sections this staff teaches
         AND pa.sectionId IN (SELECT sectionId FROM StaffCourse WHERE Userid = ? AND courseId = ?)
         ${safeSectionId ? "AND pa.sectionId = ?" : ""}
         AND pa.dayOfWeek = ?
         AND pa.periodNumber = ?
         AND pa.attendanceDate = ?
         AND pa.updatedBy = 'admin'
-        AND sd.batch = CAST(bat.batch AS UNSIGNED)
       ORDER BY pa.regno
     `;
 
@@ -329,281 +308,146 @@ export async function getSkippedStudents(req, res, next) {
 
     const [skippedStudents] = await connection.query(baseQuery, params);
 
-    console.log("Fetched Skipped Students:", {
-      courseId,
-      sectionId: safeSectionId,
-      dayOfWeek,
-      periodNumber,
-      date,
-      totalSkipped: skippedStudents.length,
-    });
-
     res.json({ status: "success", data: skippedStudents || [] });
   } catch (err) {
-    console.error("Error in getSkippedStudents:", {
-      message: err.message,
-      stack: err.stack,
-    });
-    res.status(500).json({
-      status: "error",
-      message: err.message || "Failed to fetch skipped students",
-    });
+    console.error("Error in getSkippedStudents:", err);
+    res.status(500).json({ status: "error", message: err.message });
   } finally {
     connection.release();
   }
 }
 
-// Mark attendance for a period
+// 4. Mark Attendance
 export async function markAttendance(req, res, next) {
   const connection = await pool.getConnection();
   try {
     const { courseId, sectionId, dayOfWeek, periodNumber } = req.params;
     const { date, attendances } = req.body;
     const staffId = req.user.staffId;
-    const deptId = req.user.Deptid || 1;
+    const deptId = req.user.Deptid || 1; // Fallback dept
 
-    console.log("markAttendance Input:", {
-      courseId,
-      sectionId,
-      dayOfWeek,
-      periodNumber,
-      date,
-      staffId,
-      deptId,
-      attendances,
-    });
+    let safeSectionId = sectionId && !isNaN(parseInt(sectionId)) ? parseInt(sectionId) : null;
 
-    let safeSectionId =
-      sectionId && !isNaN(parseInt(sectionId)) ? parseInt(sectionId) : null;
-
-    if (!Array.isArray(attendances) || attendances.length === 0) {
-      return res
-        .status(400)
-        .json({ status: "error", message: "No attendance data provided" });
-    }
-
-    if (!date) {
-      return res
-        .status(400)
-        .json({ status: "error", message: "Date is required" });
-    }
-
-    if (!courseId || !dayOfWeek || !periodNumber) {
-      return res.status(400).json({
-        status: "error",
-        message:
-          "Missing required parameters: courseId, dayOfWeek, periodNumber",
-      });
+    if (!Array.isArray(attendances) || !date || !courseId || !dayOfWeek || !periodNumber) {
+      return res.status(400).json({ status: "error", message: "Missing required data" });
     }
 
     const userId = await getUserIdFromStaffId(staffId, connection);
 
-    // Check staff assignment to course (any section if safeSectionId null, or specific)
+    // A. Check Authorization (Staff must be assigned to this course)
     const assignmentQuery = safeSectionId
-      ? `
-        SELECT COUNT(*) as count
-        FROM StaffCourse 
-        WHERE Userid = ? AND courseId = ? AND sectionId = ?
-        `
-      : `
-        SELECT COUNT(*) as count
-        FROM StaffCourse 
-        WHERE Userid = ? AND courseId = ?
-        `;
-    const assignmentParams = safeSectionId
-      ? [userId, courseId, safeSectionId]
-      : [userId, courseId];
-    const [courseAssignment] = await connection.query(
-      assignmentQuery,
-      assignmentParams
-    );
+      ? `SELECT COUNT(*) as count FROM StaffCourse WHERE Userid = ? AND courseId = ? AND sectionId = ?`
+      : `SELECT COUNT(*) as count FROM StaffCourse WHERE Userid = ? AND courseId = ?`;
+    
+    const assignmentParams = safeSectionId ? [userId, courseId, safeSectionId] : [userId, courseId];
+    const [courseAssignment] = await connection.query(assignmentQuery, assignmentParams);
 
     if (courseAssignment[0].count === 0) {
-      return res.status(403).json({
-        status: "error",
-        message: `You are not authorized to mark attendance for course ${courseId}${
-          safeSectionId ? ` section ${safeSectionId}` : ""
-        }`,
-      });
+      return res.status(403).json({ status: "error", message: "Not authorized" });
     }
 
+    // B. Validate Timetable Slot
     const [timetableCheck] = await connection.query(
-      `
-      SELECT COUNT(*) as count
-      FROM Timetable
-      WHERE courseId = ? AND dayOfWeek = ? AND periodNumber = ?
-      `,
+      `SELECT COUNT(*) as count FROM Timetable WHERE courseId = ? AND dayOfWeek = ? AND periodNumber = ?`,
       [courseId, dayOfWeek, periodNumber]
     );
 
     if (timetableCheck[0].count === 0) {
-      return res.status(400).json({
-        status: "error",
-        message: `Invalid period: courseId ${courseId}, dayOfWeek ${dayOfWeek}, periodNumber ${periodNumber} not found in Timetable`,
-      });
+      return res.status(400).json({ status: "error", message: "Invalid Timetable Slot" });
     }
 
+    // Start Transaction
     await connection.beginTransaction();
 
+    // Get Semester info for insertion
     const [courseInfo] = await connection.query(
-      `SELECT c.semesterId, s.semesterNumber 
-       FROM Course c 
-       JOIN Semester s ON c.semesterId = s.semesterId
-       WHERE c.courseId = ?`,
+      `SELECT s.semesterNumber FROM Course c JOIN Semester s ON c.semesterId = s.semesterId WHERE c.courseId = ?`,
       [courseId]
     );
-
-    if (!courseInfo[0]) {
-      throw new Error(
-        `Course ${courseId} not found or invalid semester information`
-      );
-    }
-    const semesterNumber = courseInfo[0].semesterNumber;
+    const semesterNumber = courseInfo[0]?.semesterNumber;
 
     const processedStudents = [];
     const skippedStudents = [];
 
+    // Loop through attendance records
     for (const att of attendances) {
       if (!att.rollnumber || !["P", "A", "OD"].includes(att.status)) {
-        console.log("Skipping invalid attendance record:", att);
-        skippedStudents.push({
-          rollnumber: att.rollnumber || "unknown",
-          reason: "Invalid rollnumber or status",
-        });
+        skippedStudents.push({ rollnumber: att.rollnumber || "N/A", reason: "Invalid Data" });
         continue;
       }
 
-      // Fetch student's sectionId from StudentCourse (required, even if param null)
+      // 1. Get Student's Enrolled Section
       const [studentCourse] = await connection.query(
-        `SELECT sectionId, COUNT(*) as count 
-         FROM StudentCourse 
-         WHERE regno = ? AND courseId = ?
-         GROUP BY sectionId
-         HAVING count = 1`, // Ensure enrolled in exactly one section for course
+        `SELECT sectionId FROM StudentCourse WHERE regno = ? AND courseId = ? LIMIT 1`,
         [att.rollnumber, courseId]
       );
 
-      if (studentCourse.length === 0 || studentCourse[0].count !== 1) {
-        console.log("Student not enrolled or multi-section:", att.rollnumber);
-        skippedStudents.push({
-          rollnumber: att.rollnumber,
-          reason: `Not enrolled in course ${courseId} (or enrolled in multiple sections)`,
-        });
+      if (studentCourse.length === 0) {
+        skippedStudents.push({ rollnumber: att.rollnumber, reason: "Not enrolled in course" });
         continue;
       }
 
       const thisStudentSectionId = parseInt(studentCourse[0].sectionId);
 
-      // If param sectionId specific, ensure matches student's
+      // 2. Mismatch Check: If API requested a specific section, student must match
       if (safeSectionId && safeSectionId !== thisStudentSectionId) {
-        skippedStudents.push({
-          rollnumber: att.rollnumber,
-          reason: `Student in section ${thisStudentSectionId}, but period is for section ${safeSectionId}`,
-        });
+        skippedStudents.push({ rollnumber: att.rollnumber, reason: "Student section mismatch" });
         continue;
       }
 
-      // Check if student's section is assigned to this staff
+      // 3. Staff Assignment Check: Does this staff teach the student's section?
       const [staffSectionCheck] = await connection.query(
-        `SELECT COUNT(*) as count 
-         FROM StaffCourse 
-         WHERE Userid = ? AND courseId = ? AND sectionId = ?`,
+        `SELECT COUNT(*) as count FROM StaffCourse WHERE Userid = ? AND courseId = ? AND sectionId = ?`,
         [userId, courseId, thisStudentSectionId]
       );
 
       if (staffSectionCheck[0].count === 0) {
-        skippedStudents.push({
-          rollnumber: att.rollnumber,
-          reason: `Student's section ${thisStudentSectionId} not assigned to you`,
-        });
+        skippedStudents.push({ rollnumber: att.rollnumber, reason: "You do not teach this student's section" });
         continue;
       }
 
+      // 4. Admin Override Check
       const [existingRecord] = await connection.query(
-        `
-        SELECT updatedBy 
-        FROM PeriodAttendance 
-        WHERE regno = ? AND courseId = ? AND sectionId = ? 
-          AND attendanceDate = ? AND periodNumber = ?
-        `,
+        `SELECT updatedBy FROM PeriodAttendance 
+         WHERE regno = ? AND courseId = ? AND sectionId = ? AND attendanceDate = ? AND periodNumber = ?`,
         [att.rollnumber, courseId, thisStudentSectionId, date, periodNumber]
       );
 
       if (existingRecord[0]?.updatedBy === "admin") {
-        console.log("Skipping admin-marked record:", att.rollnumber);
-        skippedStudents.push({
-          rollnumber: att.rollnumber,
-          reason: "Attendance marked by admin",
-        });
+        skippedStudents.push({ rollnumber: att.rollnumber, reason: "Locked by Admin" });
         continue;
       }
 
-      const statusToSave = att.status;
+      // 5. Insert/Update
       await connection.query(
         `
         INSERT INTO PeriodAttendance 
         (regno, staffId, courseId, sectionId, semesterNumber, dayOfWeek, periodNumber, attendanceDate, status, Deptid, updatedBy)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE 
-          status = ?,
-          updatedBy = ?
+        ON DUPLICATE KEY UPDATE status = ?, updatedBy = ?
         `,
         [
-          att.rollnumber,
-          userId,
-          courseId,
-          thisStudentSectionId,
-          semesterNumber,
-          dayOfWeek,
-          periodNumber,
-          date,
-          statusToSave,
-          deptId,
-          "staff",
-          statusToSave,
-          "staff",
+          att.rollnumber, userId, courseId, thisStudentSectionId, semesterNumber,
+          dayOfWeek, periodNumber, date, att.status, deptId, "staff",
+          att.status, "staff"
         ]
       );
 
-      processedStudents.push({
-        rollnumber: att.rollnumber,
-        status: statusToSave,
-        sectionId: thisStudentSectionId, // Optional: log section used
-      });
+      processedStudents.push({ rollnumber: att.rollnumber, status: att.status });
     }
 
     await connection.commit();
 
-    console.log("Attendance Marked Successfully:", {
-      courseId,
-      sectionId: safeSectionId,
-      date,
-      periodNumber,
-      processedStudents,
-      skippedStudents,
-    });
-
     res.json({
       status: "success",
-      message: `Attendance marked for ${processedStudents.length} students, skipped ${skippedStudents.length} students`,
+      message: `Processed ${processedStudents.length}, Skipped ${skippedStudents.length}`,
       data: { processedStudents, skippedStudents },
     });
+
   } catch (err) {
     await connection.rollback();
-    console.error("Error in markAttendance:", {
-      message: err.message,
-      stack: err.stack,
-      courseId: req.params.courseId,
-      sectionId: req.params.sectionId,
-      periodNumber: req.params.periodNumber,
-      date: req.body.date,
-    });
-    res.status(500).json({
-      status: "error",
-      message:
-        err.message ||
-        `Failed to mark attendance for course ${req.params.courseId} period ${req.params.periodNumber}`,
-    });
+    console.error("Error in markAttendance:", err);
+    res.status(500).json({ status: "error", message: err.message });
   } finally {
     connection.release();
   }

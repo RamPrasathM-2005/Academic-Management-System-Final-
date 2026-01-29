@@ -120,15 +120,19 @@ export const getElectiveBuckets = catchAsync(async (req, res) => {
     const requiredMap = { OEC: 0, PEC: 0 };
     required.forEach(r => requiredMap[r.category] = r.count);
 
+    // --- FIX STARTS HERE ---
     // Count approved NPTEL
+    // Changed 'status' to 'studentStatus' and 'approved' to 'accepted' based on your schema
     const [nptel] = await connection.execute(`
       SELECT nc.type, COUNT(*) as count
       FROM NptelCreditTransfer nct
       JOIN StudentNptelEnrollment sne ON nct.enrollmentId = sne.enrollmentId
       JOIN NptelCourse nc ON sne.nptelCourseId = nc.nptelCourseId
-      WHERE nct.regno = ? AND nct.status = 'approved'
+      WHERE nct.regno = ? AND nct.studentStatus = 'accepted'
       GROUP BY nc.type
     `, [regno]);
+    // --- FIX ENDS HERE ---
+
     const nptelMap = { OEC: 0, PEC: 0 };
     nptel.forEach(r => nptelMap[r.type] = r.count);
 
