@@ -71,56 +71,94 @@ export const importRegulationCourses = async (req, res) => {
   }
 
   let connection;
+  const skippedRows = [];
+  let insertedCount = 0;
+
   try {
     connection = await pool.getConnection();
     await connection.beginTransaction();
 
-    const courseInserts = courses.map(async (course, index) => {
+    const validCategories = ['HSMC', 'BSC', 'ESC', 'PEC', 'OEC', 'EEC', 'PCC', 'MC']; // Add more if needed
+
+    for (const [index, course] of courses.entries()) {
       const {
-        courseCode, courseTitle, category, lectureHours, tutorialHours,
-        practicalHours, experientialHours, totalContactPeriods, credits,
-        minMark, maxMark, semesterNumber
+        courseCode = '', courseTitle = '', category = '',
+        lectureHours = 0, tutorialHours = 0, practicalHours = 0, experientialHours = 0,
+        totalContactPeriods = 0, credits = 0, minMark = 0, maxMark = 0, semesterNumber
       } = course;
 
-      if (!semesterNumber || semesterNumber < 1 || semesterNumber > 8) {
-        throw new Error(`Invalid semester number ${semesterNumber} for course ${courseCode} at row ${index + 2}`);
+      const upperCategory = category.toString().trim().toUpperCase();
+
+      // Truncate category safely to avoid "Data truncated" error
+      const safeCategory = upperCategory.substring(0, 50); // Match your new column length
+      if (upperCategory.length > 50) {
+        console.warn(`Category truncated from "${upperCategory}" to "${safeCategory}" (row ${index + 2})`);
       }
 
-      const [result] = await connection.execute(
-        `INSERT INTO RegulationCourse (
-          regulationId, semesterNumber, courseCode, courseTitle, category, type,
-          lectureHours, tutorialHours, practicalHours, experientialHours,
-          totalContactPeriods, credits, minMark, maxMark, createdBy, updatedBy
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          regulationId,
-          semesterNumber,
-          courseCode,
-          courseTitle,
-          category.toUpperCase(),
-          determineCourseType(lectureHours, tutorialHours, practicalHours, experientialHours),
-          lectureHours,
-          tutorialHours,
-          practicalHours,
-          experientialHours,
-          totalContactPeriods,
-          credits,
-          minMark,
-          maxMark,
-          createdBy,
-          updatedBy
-        ]
-      );
-      return result.insertId;
-    });
+      // Skip if critical fields missing
+      if (!courseCode.trim() || !courseTitle.trim() || !safeCategory) {
+        skippedRows.push({ row: index + 2, reason: 'Missing courseCode, courseTitle, or category' });
+        continue;
+      }
 
-    await Promise.all(courseInserts);
+      // Semester number: required for non-PEC/OEC
+      const isElective = ['PEC', 'OEC'].includes(safeCategory);
+      let finalSemesterNumber = null;
+
+      if (!isElective) {
+        if (!semesterNumber || isNaN(semesterNumber) || semesterNumber < 1 || semesterNumber > 8) {
+          skippedRows.push({ row: index + 2, reason: 'Invalid or missing semester number for non-elective' });
+          continue;
+        }
+        finalSemesterNumber = Number(semesterNumber);
+      }
+
+      try {
+        const [result] = await connection.execute(
+          `INSERT INTO RegulationCourse (
+            regulationId, semesterNumber, courseCode, courseTitle, category, type,
+            lectureHours, tutorialHours, practicalHours, experientialHours,
+            totalContactPeriods, credits, minMark, maxMark, createdBy, updatedBy
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            regulationId,
+            finalSemesterNumber,
+            courseCode.trim(),
+            courseTitle.trim(),
+            safeCategory,
+            determineCourseType(lectureHours, tutorialHours, practicalHours, experientialHours),
+            Number(lectureHours),
+            Number(tutorialHours),
+            Number(practicalHours),
+            Number(experientialHours),
+            Number(totalContactPeriods),
+            Number(credits),
+            Number(minMark),
+            Number(maxMark),
+            createdBy,
+            updatedBy
+          ]
+        );
+        insertedCount++;
+      } catch (insertErr) {
+        skippedRows.push({ row: index + 2, reason: `Insert failed: ${insertErr.message}` });
+      }
+    }
+
     await connection.commit();
-    res.json({ status: 'success', message: 'Courses added to regulation successfully' });
+
+    res.json({
+      status: 'success',
+      message: `Imported ${insertedCount} courses successfully`,
+      skipped: skippedRows.length > 0 ? skippedRows : undefined,
+    });
   } catch (err) {
     if (connection) await connection.rollback();
     console.error('Error adding courses:', err);
-    res.status(500).json({ status: 'failure', message: `Server error: ${err.message}` });
+    res.status(500).json({
+      status: 'failure',
+      message: `Server error: ${err.message}`,
+    });
   } finally {
     if (connection) connection.release();
   }
@@ -295,11 +333,18 @@ export const allocateRegulationToBatch = async (req, res) => {
       return map;
     }, {});
 
-    // Copy regulation courses to Course table (check for duplicates by courseCode and semesterId)
+    // Copy regulation courses to Course table – but SKIP PEC/OEC with NULL semesterNumber
     const courseInserts = regCourses.map(async (regCourse) => {
+      // NEW: Skip global PEC/OEC (no semesterNumber)
+      if (['PEC', 'OEC'].includes(regCourse.category) && regCourse.semesterNumber === null) {
+        console.log(`Skipping global ${regCourse.category} course ${regCourse.courseCode} (no semesterNumber)`);
+        return; // Do NOT copy to Course table
+      }
+
       const semesterId = semesterMap[regCourse.semesterNumber];
       if (!semesterId) {
-        throw new Error(`Semester ${regCourse.semesterNumber} not found for batch ${batchId}`);
+        console.warn(`Skipping course ${regCourse.courseCode} – semester ${regCourse.semesterNumber} not found`);
+        return;
       }
 
       // Check if course already exists for this semester
@@ -339,7 +384,11 @@ export const allocateRegulationToBatch = async (req, res) => {
 
     await Promise.all(courseInserts);
     await connection.commit();
-    res.json({ status: 'success', message: 'Regulation allocated to batch successfully, all semesters and courses created' });
+
+    res.json({ 
+      status: 'success', 
+      message: 'Regulation allocated to batch successfully. Semester-specific courses copied. Global PEC/OEC skipped (they are available via buckets).' 
+    });
   } catch (err) {
     if (connection) await connection.rollback();
     console.error('Error allocating regulation to batch:', err);
@@ -372,6 +421,33 @@ export const getElectivesForSemester = async (req, res) => {
     res.json({ status: 'success', data: rows });
   } catch (err) {
     console.error('Error fetching electives for semester:', err);
+    res.status(500).json({ status: 'failure', message: err.message });
+  }
+};
+
+export const getAllElectivesForRegulation = async (req, res) => {
+  const { regulationId } = req.params;
+  try {
+    const [rows] = await pool.execute(`
+      SELECT 
+        rc.courseCode,
+        rc.courseTitle,
+        rc.category,
+        rc.semesterNumber,
+        vc.verticalId,
+        v.verticalName
+      FROM RegulationCourse rc
+      LEFT JOIN VerticalCourse vc ON rc.regCourseId = vc.regCourseId
+      LEFT JOIN Vertical v ON vc.verticalId = v.verticalId
+      WHERE rc.regulationId = ?
+        AND rc.category IN ('PEC', 'OEC')
+        AND rc.isActive = 'YES'
+      ORDER BY rc.courseCode
+    `, [regulationId]);
+
+    res.json({ status: 'success', data: rows });
+  } catch (err) {
+    console.error('Error fetching all electives:', err);
     res.status(500).json({ status: 'failure', message: err.message });
   }
 };

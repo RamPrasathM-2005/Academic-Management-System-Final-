@@ -146,20 +146,19 @@ const CourseRecommendation = () => {
         }
 
         // 4. NEW: Fetch ALL PEC/OEC (assigned + unassigned OEC) for this semester
+        // Inside fetchAllData():
+        // Replace the old electives fetch with this:
         const electivesRes = await api.get(
-          `/admin/regulations/${selectedRegulationId}/electives/${selectedSemesterNumber}`
+          `/admin/regulations/${selectedRegulationId}/electives/global` // ← New endpoint we'll add
         );
         if (electivesRes.data.status === 'success') {
-          const formattedElectives = electivesRes.data.data.map(course => ({
-            ...course,
-            verticalId: course.verticalId || null,
-            verticalName: course.verticalName || 'Unassigned'
+          const formatted = electivesRes.data.data.map(c => ({
+            ...c,
+            verticalId: c.verticalId || null,
+            verticalName: c.verticalName || 'Unassigned'
           }));
-          setElectives(formattedElectives);
-          console.log('✅ All electives loaded (assigned + unassigned OEC):', formattedElectives);
-        } else {
-          console.warn('No electives data received');
-          setElectives([]);
+          setElectives(formatted);
+          console.log('All global PEC/OEC loaded:', formatted);
         }
 
       } catch (err) {

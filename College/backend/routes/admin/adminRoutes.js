@@ -91,8 +91,9 @@ import {
   getAvailableCoursesForVertical,
   allocateCoursesToVertical,
   allocateRegulationToBatch,
-  getCoursesByVertical, // Added this import
-  getElectivesForSemester, // Added this import
+  getCoursesByVertical, 
+  getElectivesForSemester, 
+  getAllElectivesForRegulation, 
 } from "../../controllers/regulationController.js";
 import { protect } from "../../controllers/auth/authController.js";
 import { getStudentEnrollments } from "../../controllers/studentEnrollmentViewController.js";
@@ -244,7 +245,7 @@ router.route('/regulations/:regulationId/courses/available').get(protect, getAva
 router.route('/regulations/verticals/courses').post(protect, allocateCoursesToVertical);
 router.route('/regulations/verticals/:verticalId/courses').get(protect, getCoursesByVertical); // Added this route
 router.route('/regulations/allocate-to-batch').post(protect, allocateRegulationToBatch); // Added this route
-
+router.get('/regulations/:regulationId/electives/global', protect, getAllElectivesForRegulation);
 
 
 

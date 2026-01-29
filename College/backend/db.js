@@ -230,10 +230,10 @@ const initDatabase = async () => {
             CREATE TABLE IF NOT EXISTS RegulationCourse (
                 regCourseId INT PRIMARY KEY AUTO_INCREMENT,
                 regulationId INT NOT NULL,
-                semesterNumber INT NOT NULL CHECK (semesterNumber BETWEEN 1 AND 8),
+                semesterNumber INT NULL DEFAULT NULL,
                 courseCode VARCHAR(20) NOT NULL,
                 courseTitle VARCHAR(255) NOT NULL,
-                category ENUM('HSMC','BSC','ESC','PEC','OEC','EEC','PCC') NOT NULL,
+                category ENUM('HSMC','BSC','ESC','PEC','OEC','EEC','PCC','MC') NOT NULL,
                 type ENUM('THEORY','INTEGRATED','PRACTICAL','EXPERIENTIAL LEARNING') NOT NULL,
                 lectureHours INT DEFAULT 0,
                 tutorialHours INT DEFAULT 0,

@@ -152,7 +152,7 @@ export const addCoursesToBucket = catchAsync(async (req, res) => {
   try {
     await connection.beginTransaction();
 
-    // 1. Validate bucket existence and get its semesterId
+    // Get bucket's semesterId
     const [bucket] = await connection.execute(
       `SELECT semesterId FROM ElectiveBucket WHERE bucketId = ?`,
       [bucketId]
@@ -167,72 +167,91 @@ export const addCoursesToBucket = catchAsync(async (req, res) => {
     }
 
     const bucketSemesterId = bucket[0].semesterId;
+
     const errors = [];
     const addedCourses = [];
 
     for (let courseCode of courseCodes) {
-      // 2. Validate course existence WITHIN the bucket's specific semester/department
-      // This is the key change: we filter by both courseCode AND bucketSemesterId
-      const [course] = await connection.execute(
+      // 1. Try to find existing course in this semester
+      let [course] = await connection.execute(
         `SELECT courseId FROM Course 
-         WHERE courseCode = ? 
-         AND semesterId = ? 
-         AND category IN ('PEC', 'OEC') 
-         AND isActive = 'YES'`,
+         WHERE courseCode = ? AND semesterId = ?`,
         [courseCode, bucketSemesterId]
       );
 
+      let courseId;
+
       if (course.length === 0) {
-        errors.push(
-          `Course ${courseCode} is not available in the curriculum for this specific department/semester.`
+        // 2. If not found → check if it exists in RegulationCourse (global PEC/OEC)
+        const [regCourse] = await connection.execute(
+          `SELECT rc.*, b.regulationId
+           FROM RegulationCourse rc
+           JOIN Batch b ON rc.regulationId = b.regulationId
+           JOIN Semester s ON s.batchId = b.batchId
+           WHERE rc.courseCode = ? 
+           AND s.semesterId = ?
+           AND rc.category IN ('PEC', 'OEC')`,
+          [courseCode, bucketSemesterId]
         );
-        continue;
+
+        if (regCourse.length === 0) {
+          errors.push(`Course ${courseCode} not found in regulation or not available for this semester`);
+          continue;
+        }
+
+        // 3. Auto-create Course entry for this semester
+        const reg = regCourse[0];
+        const [insert] = await connection.execute(
+          `INSERT INTO Course (
+            courseCode, semesterId, courseTitle, category, type,
+            lectureHours, tutorialHours, practicalHours, experientialHours,
+            totalContactPeriods, credits, minMark, maxMark, createdBy, updatedBy
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            reg.courseCode,
+            bucketSemesterId,
+            reg.courseTitle,
+            reg.category,
+            reg.type,
+            reg.lectureHours,
+            reg.tutorialHours,
+            reg.practicalHours,
+            reg.experientialHours,
+            reg.totalContactPeriods,
+            reg.credits,
+            reg.minMark,
+            reg.maxMark,
+            'system-auto',
+            'system-auto'
+          ]
+        );
+
+        courseId = insert.insertId;
+        console.log(`Auto-created Course entry for global ${reg.category} ${courseCode} in semesterId ${bucketSemesterId}`);
+      } else {
+        courseId = course[0].courseId;
       }
 
-      const courseId = course[0].courseId;
-
-      // 3. Check if this course (by code) is already in another bucket FOR THIS SEMESTER
-      const [existingInOtherBucket] = await connection.execute(
-        `SELECT ebc.bucketId 
-         FROM ElectiveBucketCourse ebc 
-         JOIN Course c ON ebc.courseId = c.courseId 
-         WHERE c.courseCode = ? 
-         AND c.semesterId = ? 
-         AND ebc.bucketId != ?`,
-        [courseCode, bucketSemesterId, bucketId]
-      );
-
-      if (existingInOtherBucket.length > 0) {
-        errors.push(
-          `Course ${courseCode} is already assigned to another bucket (ID: ${existingInOtherBucket[0].bucketId}) in this department.`
-        );
-        continue;
-      }
-
-      // 4. Check if this course is already in THIS current bucket
-      const [alreadyInThisBucket] = await connection.execute(
+      // 4. Check if already in this bucket
+      const [existing] = await connection.execute(
         `SELECT id FROM ElectiveBucketCourse 
          WHERE bucketId = ? AND courseId = ?`,
         [bucketId, courseId]
       );
 
-      if (alreadyInThisBucket.length > 0) {
-        // Just skip if it's already there, no need to throw an error unless preferred
-        continue;
+      if (existing.length > 0) {
+        continue; // Already in bucket
       }
 
-      // 5. Insert course into bucket
-      const [result] = await connection.execute(
+      // 5. Add to bucket
+      await connection.execute(
         `INSERT INTO ElectiveBucketCourse (bucketId, courseId) VALUES (?, ?)`,
         [bucketId, courseId]
       );
 
-      if (result.affectedRows > 0) {
-        addedCourses.push(courseCode);
-      }
+      addedCourses.push(courseCode);
     }
 
-    // If no courses were added and there were errors, return failure
     if (addedCourses.length === 0 && errors.length > 0) {
       await connection.rollback();
       return res.status(400).json({
@@ -243,6 +262,7 @@ export const addCoursesToBucket = catchAsync(async (req, res) => {
     }
 
     await connection.commit();
+
     res.status(200).json({
       status: "success",
       message: `Successfully processed courses for bucket`,
@@ -268,77 +288,81 @@ export const removeCourseFromBucket = catchAsync(async (req, res) => {
   try {
     await connection.beginTransaction();
 
-    // Validate bucket existence
+    // 1. Get bucket's semesterId
     const [bucket] = await connection.execute(
-      `SELECT bucketId FROM ElectiveBucket WHERE bucketId = ?`,
+      `SELECT semesterId FROM ElectiveBucket WHERE bucketId = ?`,
       [bucketId]
     );
     if (bucket.length === 0) {
-      return res
-        .status(404)
-        .json({
-          status: "failure",
-          message: `Bucket with ID ${bucketId} not found`,
-        });
+      return res.status(404).json({ status: "failure", message: `Bucket ${bucketId} not found` });
     }
+    const semesterId = bucket[0].semesterId;
 
-    // Get courseId from courseCode
+    // 2. Get courseId from courseCode in this semester
     const [courses] = await connection.execute(
-      `SELECT courseId FROM Course WHERE courseCode = ?`,
-      [courseCode]
+      `SELECT courseId FROM Course WHERE courseCode = ? AND semesterId = ?`,
+      [courseCode, semesterId]
     );
     if (courses.length === 0) {
-      return res
-        .status(404)
-        .json({ status: "failure", message: `Course ${courseCode} not found` });
+      return res.status(404).json({ status: "failure", message: `Course ${courseCode} not found in this semester` });
     }
     const courseId = courses[0].courseId;
 
-    // Check if course exists in the bucket
-    const [existing] = await connection.execute(
-      `SELECT id FROM ElectiveBucketCourse WHERE bucketId = ? AND courseId = ?`,
-      [bucketId, courseId]
-    );
-    if (existing.length === 0) {
-      return res
-        .status(404)
-        .json({
-          status: "failure",
-          message: `Course ${courseCode} not found in bucket ${bucketId}`,
-        });
-    }
-
-    // Remove course from bucket
-    const [result] = await connection.execute(
+    // 3. Remove from this bucket
+    const [deleteResult] = await connection.execute(
       `DELETE FROM ElectiveBucketCourse WHERE bucketId = ? AND courseId = ?`,
       [bucketId, courseId]
     );
-
-    if (result.affectedRows === 0) {
+    if (deleteResult.affectedRows === 0) {
       await connection.rollback();
-      return res
-        .status(500)
-        .json({
-          status: "failure",
-          message: `Failed to remove course ${courseCode} from bucket ${bucketId}`,
-        });
+      return res.status(404).json({ status: "failure", message: `Course not found in bucket ${bucketId}` });
+    }
+
+    // 4. NEW: Check if this course is still used in ANY other bucket for this semester
+    const [otherBuckets] = await connection.execute(
+      `SELECT COUNT(*) as count 
+       FROM ElectiveBucketCourse ebc
+       JOIN ElectiveBucket eb ON ebc.bucketId = eb.bucketId
+       WHERE ebc.courseId = ? AND eb.semesterId = ? AND eb.bucketId != ?`,
+      [courseId, semesterId, bucketId]
+    );
+
+    const stillUsed = otherBuckets[0].count > 0;
+
+    // 5. If not used anywhere else in this semester → delete the Course entry
+    if (!stillUsed) {
+      // Optional: Check if this was auto-created (e.g., original semesterNumber was NULL)
+      const [regCourse] = await connection.execute(
+        `SELECT semesterNumber FROM RegulationCourse WHERE courseCode = ?`,
+        [courseCode]
+      );
+      const isGlobal = regCourse.length > 0 && regCourse[0].semesterNumber === null;
+
+      if (isGlobal) {
+        await connection.execute(
+          `DELETE FROM Course WHERE courseId = ?`,
+          [courseId]
+        );
+        console.log(`Deleted auto-created Course entry for global ${courseCode} in semester ${semesterId}`);
+      }
     }
 
     await connection.commit();
+
     res.status(200).json({
       status: "success",
-      message: `Course ${courseCode} removed from bucket ${bucketId} successfully`,
+      message: `Course ${courseCode} removed from bucket ${bucketId}`,
+      deletedCourseEntry: !stillUsed && isGlobal ? true : false
     });
   } catch (err) {
-    await connection.rollback();
+    if (connection) await connection.rollback();
     console.error("Error removing course from bucket:", err);
     res.status(500).json({
       status: "failure",
       message: `Server error: ${err.message}`,
-      sqlMessage: err.sqlMessage || "No SQL message available",
     });
   } finally {
-    connection.release();
+    if (connection) connection.release();
   }
 });
 

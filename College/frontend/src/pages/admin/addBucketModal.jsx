@@ -46,38 +46,19 @@ const AddBucketModal = ({
     }
   };
 
-  const fetchUnassignedOEC = async () => {
-    setLoading(true);
-    try {
-      // Use the new endpoint that returns all PEC/OEC including unassigned
-      const res = await api.get(
-        `/admin/regulations/${regulationId}/electives/${semesterNumber}`
+const fetchUnassignedOEC = async () => {
+  try {
+    const res = await api.get(`/admin/regulations/${regulationId}/electives/global`);
+    if (res.data.status === 'success') {
+      const unassigned = res.data.data.filter(
+        c => c.verticalId === null && c.category === 'OEC' && !assignedCourses.includes(c.courseCode)
       );
-      if (res.data.status === 'success') {
-        // Filter only unassigned OEC
-        const unassigned = res.data.data.filter(
-          c => c.verticalId === null && c.category === 'OEC' && !assignedCourses.includes(c.courseCode)
-        );
-        setUnassignedOEC(unassigned);
-      }
-    } catch (err) {
-      console.warn('Could not fetch unassigned OEC (optional)', err);
-      // Fallback using available courses endpoint if needed
-      try {
-        const availRes = await api.get(`/admin/regulations/${regulationId}/courses/available`);
-        if (availRes.data.status === 'success') {
-          const unassigned = availRes.data.data.filter(
-            c => c.category === 'OEC' && c.semesterNumber == semesterNumber && !assignedCourses.includes(c.courseCode)
-          );
-          setUnassignedOEC(unassigned);
-        }
-      } catch (fallbackErr) {
-        console.warn('Fallback also failed', fallbackErr);
-      }
-    } finally {
-      setLoading(false);
+      setUnassignedOEC(unassigned);
     }
-  };
+  } catch (err) {
+    console.warn('Failed to fetch global electives', err);
+  }
+};
 
   const toggleVertical = async (verticalId) => {
     if (!expandedVerticals[verticalId] && !coursesByVertical[verticalId]) {
@@ -89,29 +70,22 @@ const AddBucketModal = ({
     }));
   };
 
-  const fetchCoursesForVertical = async (verticalId) => {
-    setLoading(true);
-    try {
-      const res = await api.get(
-        `/admin/regulations/verticals/${verticalId}/courses?semesterNumber=${semesterNumber}`
+const fetchCoursesForVertical = async (verticalId) => {
+  try {
+    const res = await api.get(`/admin/regulations/${regulationId}/electives/global`);
+    if (res.data.status === 'success') {
+      const verticalCourses = res.data.data.filter(
+        c => c.verticalId === verticalId && !assignedCourses.includes(c.courseCode)
       );
-      if (res.data.status === "success") {
-        setCoursesByVertical((prev) => ({
-          ...prev,
-          [verticalId]: res.data.data.filter(
-            (c) => !assignedCourses.includes(c.courseCode)
-          ),
-        }));
-      }
-    } catch (err) {
-      toast.error(
-        "Failed to fetch courses for vertical: " +
-          (err.response?.data?.message || err.message)
-      );
-    } finally {
-      setLoading(false);
+      setCoursesByVertical(prev => ({
+        ...prev,
+        [verticalId]: verticalCourses
+      }));
     }
-  };
+  } catch (err) {
+    toast.error('Failed to fetch vertical courses');
+  }
+};
 
   const handleCourseSelect = (courseCode) => {
     setSelectedCourses((prev) => {

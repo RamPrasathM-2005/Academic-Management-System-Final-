@@ -34,9 +34,7 @@ const ManageRegulations = () => {
       const depts = await getDepartments();
       setDepartments(depts || []);
     } catch (err) {
-      const message = err.message || 'Failed to fetch departments';
-      setError(message);
-      toast.error(message);
+      toast.error(err.message || 'Failed to fetch departments');
     } finally {
       setLoading(false);
     }
@@ -46,12 +44,10 @@ const ManageRegulations = () => {
     setLoading(true);
     try {
       const res = await api.get(`${API_BASE}/regulations`);
-      const filteredRegulations = res.data.data.filter(reg => reg.Deptid === parseInt(deptId));
-      setRegulations(filteredRegulations);
+      const filtered = res.data.data.filter(reg => reg.Deptid === parseInt(deptId));
+      setRegulations(filtered);
     } catch (err) {
-      const message = err.response?.data?.message || 'Failed to fetch regulations';
-      setError(message);
-      toast.error(message);
+      toast.error(err.response?.data?.message || 'Failed to fetch regulations');
     } finally {
       setLoading(false);
     }
@@ -63,9 +59,7 @@ const ManageRegulations = () => {
       const res = await api.get(`${API_BASE}/regulations/${regulationId}/verticals`);
       setVerticals(res.data.data || []);
     } catch (err) {
-      const message = err.response?.data?.message || 'Failed to fetch verticals';
-      setError(message);
-      toast.error(message);
+      toast.error(err.response?.data?.message || 'Failed to fetch verticals');
     } finally {
       setLoading(false);
     }
@@ -77,9 +71,7 @@ const ManageRegulations = () => {
       const res = await api.get(`${API_BASE}/regulations/${regulationId}/courses/available`);
       setAvailableCourses(res.data.data || []);
     } catch (err) {
-      const message = err.response?.data?.message || 'Failed to fetch available courses';
-      setError(message);
-      toast.error(message);
+      toast.error(err.response?.data?.message || 'Failed to fetch available courses');
     } finally {
       setLoading(false);
     }
@@ -93,11 +85,8 @@ const ManageRegulations = () => {
     setAvailableCourses([]);
     setSelectedCourses([]);
     setError(null);
-    if (deptId) {
-      fetchRegulations(deptId);
-    } else {
-      setRegulations([]);
-    }
+    if (deptId) fetchRegulations(deptId);
+    else setRegulations([]);
   };
 
   const handleRegulationChange = (e) => {
@@ -137,16 +126,16 @@ const ManageRegulations = () => {
       const templateData = [
         {
           'S. No': '',
-          'Semester No': '',
+          'Semester No': '', // Leave empty for PEC/OEC
           'Course Code': '',
           'Course Title': '',
-          Category: '',
-          L: '',
-          T: '',
-          P: '',
-          E: '',
+          'Category': '',
+          'L': '',
+          'T': '',
+          'P': '',
+          'E': '',
           'Total Contact Periods': '',
-          Credits: '',
+          'Credits': '',
           'Min Marks': '',
           'Max Marks': '',
         },
@@ -157,7 +146,6 @@ const ManageRegulations = () => {
       XLSX.utils.book_append_sheet(wb, ws, 'CourseTemplate');
 
       const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-
       const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 
       const url = window.URL.createObjectURL(blob);
@@ -166,225 +154,151 @@ const ManageRegulations = () => {
       a.download = 'course_import_template.xlsx';
       document.body.appendChild(a);
       a.click();
-
       document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      console.error('Error generating template:', err);
-      toast.error('Failed to generate template: ' + err.message);
+      toast.error('Failed to generate template');
     }
   };
 
   const handleImport = async () => {
-    console.log('Selected regulation:', selectedRegulation);
-    console.log('Selected file:', file);
-
     if (!selectedRegulation) {
-      toast.error('Please select a regulation', { toastId: 'no-regulation-selected' });
+      toast.error('Please select a regulation');
       return;
     }
     if (!file) {
-      toast.error('Please select a file', { toastId: 'no-file-selected' });
+      toast.error('Please select a file');
       return;
     }
 
-    const validTypes = [
-      'application/vnd.ms-excel',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    ];
+    const validTypes = ['application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'];
     const validExtensions = ['.xls', '.xlsx'];
     const fileExtension = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+
     if (!validTypes.includes(file.type) && !validExtensions.includes(fileExtension)) {
-      toast.error('Please upload a valid Excel file (.xls or .xlsx)', { toastId: 'invalid-file-type' });
+      toast.error('Please upload .xls or .xlsx file');
       return;
     }
 
     setIsImporting(true);
-    toast.info('Processing Excel file and creating semesters if needed...', {
-      toastId: 'import-processing',
-      position: 'top-right',
-      autoClose: 5000,
-      hideProgressBar: false,
-      closeOnClick: true,
-      pauseOnHover: true,
-      draggable: true,
-      theme: 'light',
-    });
+    toast.info('Importing courses...');
 
     try {
       const reader = new FileReader();
       reader.onload = async (e) => {
-        try {
-          const data = new Uint8Array(e.target.result);
-          const workbook = XLSX.read(data, { type: 'array' });
-          const sheetName = workbook.SheetNames[0];
-          const worksheet = workbook.Sheets[sheetName];
-          const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        const data = new Uint8Array(e.target.result);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
 
-          const expectedHeaders = [
-            'S. No',
-            'Semester No',
-            'Course Code',
-            'Course Title',
-            'Category',
-            'L',
-            'T',
-            'P',
-            'E',
-            'Total Contact Periods',
-            'Credits',
-            'Min Marks',
-            'Max Marks',
-          ];
-          const headers = jsonData[0].map(h => h.toString().trim().toLowerCase());
-          const expectedHeadersLower = expectedHeaders.map(h => h.toLowerCase());
-          if (!headers.every((header, index) => header === expectedHeadersLower[index])) {
-            console.log('Actual headers:', headers);
-            toast.error('Invalid Excel format. Please ensure column headers match: ' + expectedHeaders.join(', '), {
-              toastId: 'invalid-excel-format',
-            });
-            return;
-          }
+        const expectedHeaders = [
+          'S. No', 'Semester No', 'Course Code', 'Course Title', 'Category',
+          'L', 'T', 'P', 'E', 'Total Contact Periods', 'Credits', 'Min Marks', 'Max Marks'
+        ];
+        const headers = jsonData[0]?.map(h => h?.toString().trim()) || [];
 
-          const coursesData = jsonData.slice(1).filter(row => row && row.length >= 13).map(row => ({
-            semesterNumber: parseInt(row[1]),
-            courseCode: row[2]?.toString().trim(),
-            courseTitle: row[3]?.toString().trim(),
-            category: row[4]?.toString().trim(),
+        if (!headers.every((h, i) => h === expectedHeaders[i])) {
+          toast.error('Invalid Excel headers. Use the downloaded template.');
+          setIsImporting(false);
+          return;
+        }
+
+        const courses = jsonData.slice(1)
+          .filter(row => row && row.some(cell => cell)) // Skip completely empty rows
+          .map((row, index) => ({
+            semesterNumber: row[1] ? parseInt(row[1]) : null, // null for PEC/OEC
+            courseCode: row[2]?.toString().trim() || '',
+            courseTitle: row[3]?.toString().trim() || '',
+            category: row[4]?.toString().trim() || '',
             lectureHours: parseInt(row[5]) || 0,
             tutorialHours: parseInt(row[6]) || 0,
             practicalHours: parseInt(row[7]) || 0,
             experientialHours: parseInt(row[8]) || 0,
-            totalContactPeriods: parseInt(row[9]),
-            credits: parseInt(row[10]),
-            minMark: parseInt(row[11]),
-            maxMark: parseInt(row[12]),
+            totalContactPeriods: parseInt(row[9]) || 0,
+            credits: parseInt(row[10]) || 0,
+            minMark: parseInt(row[11]) || 0,
+            maxMark: parseInt(row[12]) || 0,
           }));
 
-          const validTypes = ['THEORY', 'INTEGRATED', 'PRACTICAL', 'EXPERIENTIAL LEARNING'];
-          const validCategories = ['HSMC', 'BSC', 'ESC', 'PEC', 'OEC', 'EEC', 'PCC'];
-          const validCourses = [];
-          const invalidCourses = [];
+        // Frontend validation – only reject if critical data missing
+        const validCourses = [];
+        const invalidCourses = [];
 
-          for (const course of coursesData) {
-            const type = determineCourseType(
-              course.lectureHours,
-              course.tutorialHours,
-              course.practicalHours,
-              course.experientialHours
-            );
-            if (
-              !course.semesterNumber ||
-              isNaN(course.semesterNumber) ||
-              course.semesterNumber < 1 ||
-              course.semesterNumber > 8 ||
-              !course.courseCode ||
-              !course.courseTitle ||
-              !course.category ||
-              !validCategories.includes(course.category.toUpperCase()) ||
-              !validTypes.includes(type) ||
-              isNaN(course.minMark) ||
-              isNaN(course.maxMark) ||
-              isNaN(course.totalContactPeriods) ||
-              isNaN(course.credits) ||
-              course.minMark > course.maxMark ||
-              course.minMark < 0 ||
-              course.maxMark < 0
-            ) {
-              invalidCourses.push({
-                course,
-                error: `Invalid data: ${!course.semesterNumber ? 'Missing semester number' : ''} ${
-                  isNaN(course.semesterNumber) ? 'Invalid semester number' : ''
-                } ${course.semesterNumber < 1 || course.semesterNumber > 8 ? 'Semester out of range' : ''} ${
-                  !course.courseCode ? 'Missing course code' : ''
-                } ${!course.courseTitle ? 'Missing course title' : ''} ${
-                  !course.category || !validCategories.includes(course.category.toUpperCase())
-                    ? 'Invalid category'
-                    : ''
-                } ${!validTypes.includes(type) ? 'Invalid course type' : ''} ${
-                  isNaN(course.minMark) ? 'Invalid min marks' : ''
-                } ${isNaN(course.maxMark) ? 'Invalid max marks' : ''} ${
-                  isNaN(course.totalContactPeriods) ? 'Invalid total contact periods' : ''
-                } ${isNaN(course.credits) ? 'Invalid credits' : ''} ${
-                  course.minMark > course.maxMark ? 'Min marks exceed max marks' : ''
-                }`,
-              });
-            } else {
-              validCourses.push(course);
-            }
-          }
+        courses.forEach((course, index) => {
+          const isElective = ['PEC', 'OEC'].includes(course.category?.toUpperCase());
 
-          if (invalidCourses.length > 0) {
-            console.warn('Invalid courses:', invalidCourses);
-            toast.warn(
-              <>
-                Some courses were invalid and skipped. Check console or{' '}
-                <button
-                  className="underline text-blue-600"
-                  onClick={() => alert(JSON.stringify(invalidCourses, null, 2))}
-                >
-                  view details
-                </button>.
-              </>,
-              { toastId: 'invalid-courses-warning' }
-            );
+          // Critical checks (all courses)
+          if (!course.courseCode) {
+            invalidCourses.push({ row: index + 2, reason: 'Missing Course Code' });
+            return;
           }
-          if (validCourses.length === 0) {
-            toast.error('No valid courses to import.', { toastId: 'no-valid-courses' });
+          if (!course.courseTitle) {
+            invalidCourses.push({ row: index + 2, reason: 'Missing Course Title' });
+            return;
+          }
+          if (!course.category) {
+            invalidCourses.push({ row: index + 2, reason: 'Missing Category' });
             return;
           }
 
-          console.log('Sending API request:', { courses: validCourses, regulationId: selectedRegulation });
-          const response = await api.post(`${API_BASE}/regulations/courses`, {
-            courses: validCourses,
-            regulationId: selectedRegulation,
-          });
-          console.log('API response:', response);
-          console.log('Response status:', response.status);
-          console.log('Response data:', response.data);
-          console.log('Success message:', response.data?.message || 'Courses added to regulation successfully');
-
-          // Verify successful status code
-          if (response.status < 200 || response.status >= 300) {
-            throw new Error(`API request failed with status ${response.status}`);
+          // Semester number required only for non-electives
+          if (!isElective && (!course.semesterNumber || isNaN(course.semesterNumber) || course.semesterNumber < 1 || course.semesterNumber > 8)) {
+            invalidCourses.push({ row: index + 2, reason: 'Invalid or missing Semester No (required for non-PEC/OEC)' });
+            return;
           }
 
-          // Show SweetAlert2 success popup
-          await Swal.fire({
+          validCourses.push(course);
+        });
+
+        if (invalidCourses.length > 0) {
+          toast.warn(`${invalidCourses.length} courses skipped (check console for details)`);
+          console.table(invalidCourses);
+        }
+
+        if (validCourses.length === 0) {
+          toast.error('No valid courses to import');
+          setIsImporting(false);
+          return;
+        }
+
+        const response = await api.post(`${API_BASE}/regulations/courses`, {
+          regulationId: selectedRegulation,
+          courses: validCourses,
+        });
+
+        if (response.data.status === 'success') {
+          let msg = response.data.message;
+          if (response.data.skipped?.length > 0) {
+            msg += `\n\nSkipped ${response.data.skipped.length} rows:\n` +
+              response.data.skipped.map(s => `Row ${s.row}: ${s.reason}`).join('\n');
+          }
+
+          Swal.fire({
             icon: 'success',
-            title: 'Success',
-            text: response.data?.message || 'Courses added to regulation successfully',
-            timer: 3000,
+            title: 'Import Complete',
+            html: msg.replace(/\n/g, '<br>'),
+            timer: 6000,
             timerProgressBar: true,
             showConfirmButton: false,
-            position: 'center',
           });
 
           setFile(null);
           await fetchAvailableCourses(selectedRegulation);
-        } catch (err) {
-          console.error('XLSX processing error:', err);
-          toast.error('Failed to process Excel file: ' + (err.message || 'Unknown error'), { toastId: 'import-error' });
-        } finally {
-          setIsImporting(false);
+        } else {
+          toast.error(response.data.message || 'Import failed');
         }
       };
+
       reader.readAsArrayBuffer(file);
     } catch (err) {
-      console.error('File reading error:', err);
-      toast.error('Error reading Excel file: ' + (err.message || 'Unknown error'), { toastId: 'file-read-error' });
+      toast.error('Import failed: ' + (err.message || 'Unknown error'));
+      console.error(err);
+    } finally {
       setIsImporting(false);
     }
   };
 
-  const determineCourseType = (lectureHours, tutorialHours, practicalHours, experientialHours) => {
-    if (experientialHours > 0) return 'EXPERIENTIAL LEARNING';
-    if (practicalHours > 0) {
-      if (lectureHours > 0 || tutorialHours > 0) return 'INTEGRATED';
-      return 'PRACTICAL';
-    }
-    return 'THEORY';
-  };
 
   const handleCourseSelection = (courseId) => {
     setSelectedCourses(prev =>
